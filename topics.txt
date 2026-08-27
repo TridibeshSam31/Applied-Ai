@@ -1,0 +1,342 @@
+### 2. LLM Fundamentals / APIs
+
+**🔴**
+
+Learn only engineering-relevant concepts:
+
+-  tokens 
+-  context window 
+-  temperature/top-p 
+-  system/user messages 
+-  streaming 
+-  structured outputs 
+-  API error handling 
+-  retries 
+-  rate limits 
+-  token/cost tracking 
+
+**Project:** **LLM Gateway**
+
+Build an API that:
+
+-  supports multiple models 
+-  streams responses 
+-  tracks tokens/cost 
+-  handles retries 
+-  logs requests 
+-  applies rate limits 
+
+---
+
+### 3. Tool / Function Calling
+
+**🔴🔴**
+
+This is mandatory.
+
+Learn:
+
+-  tool schemas 
+-  JSON arguments 
+-  tool selection 
+-  execution loop 
+-  tool results 
+-  multiple tools 
+-  parallel calls 
+-  validation 
+-  retries 
+-  failures 
+-  authorization 
+-  observability 
+
+Architecture:
+
+```
+```
+
+```
+User
+ ↓
+LLM
+ ↓
+Tool Call
+ ↓
+FastAPI
+ ↓
+Database / External API
+ ↓
+Tool Result
+ ↓
+LLM
+ ↓
+Response
+```
+
+**Project:** **Tool-Using Backend Agent**
+
+Tools:
+
+```
+```
+
+```
+search_customer()
+get_invoice()
+create_ticket()
+update_ticket()
+search_documents()
+send_notification()
+```
+
+**Important:** Build the tool-calling loop yourself before using an agent framework.
+
+---
+
+### 4. Embeddings
+
+**🟠**
+
+-  embeddings 
+-  vectors 
+-  cosine similarity 
+-  semantic similarity 
+-  embedding models 
+-  chunking basics 
+
+**Project:** **Semantic Code Search**
+
+Index your own repositories and search them semantically.
+
+---
+
+### 5. Vector DB
+
+**🟠**
+
+Start with **pgvector** because you already know PostgreSQL.
+
+Learn:
+
+-  vector storage 
+-  similarity search 
+-  top-k 
+-  HNSW 
+-  IVF concept 
+-  metadata filtering 
+-  hybrid search 
+
+**Project:** **Codebase Knowledge Engine**
+
+---
+
+### 6. RAG
+
+**🟠**
+
+-  ingestion 
+-  chunking 
+-  retrieval 
+-  reranking 
+-  context construction 
+-  grounding 
+-  citations 
+-  failure modes 
+
+**Project:** **Production RAG System**
+
+Not a basic PDF chatbot.
+
+Use your own code/documentation as the knowledge base.
+
+---
+
+# 7. MCP ⭐⭐⭐
+
+**Very high priority for your target.**
+
+Learn:
+
+-  MCP architecture 
+-  Host 
+-  Client 
+-  Server 
+-  Tools 
+-  Resources 
+-  Prompts 
+-  schemas 
+-  transport 
+-  stdio 
+-  HTTP 
+-  authentication 
+-  authorization 
+-  error handling 
+-  tool discovery 
+-  Claude integration 
+
+The important progression is:
+
+```
+```
+
+```
+Your Tool
+   ↓
+Function Calling
+   ↓
+MCP Tool
+   ↓
+Claude / Agent
+```
+
+**Project:** **Production MCP Server**
+
+Expose your backend functionality through MCP.
+
+Example:
+
+```
+```
+
+```
+search_customer
+get_invoice
+create_ticket
+query_database
+search_codebase
+```
+
+Then actually connect it to **Claude/Claude Code**.
+
+---
+
+# 8. Agents ⭐⭐⭐
+
+Now learn agents properly.
+
+-  agent loop 
+-  state 
+-  observations 
+-  actions 
+-  memory 
+-  planning 
+-  multi-step execution 
+-  retries 
+-  stopping conditions 
+-  tool selection 
+-  failure recovery 
+
+Understand LangGraph, but don't become dependent on it.
+
+**Project:** **Enterprise Task Agent**
+
+Example:
+
+> Find an unpaid invoice → check eligibility → create ticket → notify customer.
+
+Store the complete trajectory.
+
+---
+
+# 9. Evals ⭐⭐⭐
+
+
+
+Learn:
+
+-  evaluation datasets 
+-  golden datasets 
+-  deterministic evaluation 
+-  expected outcomes 
+-  rubrics 
+-  LLM-as-a-judge 
+-  correctness 
+-  relevance 
+-  groundedness 
+-  hallucination 
+-  regression testing 
+-  cost 
+-  latency 
+
+**Project:** **LLM Eval Harness**
+
+```
+```
+
+```
+Dataset
+ ↓
+Model
+ ↓
+Output
+ ↓
+Evaluator
+ ↓
+Score
+ ↓
+Report
+```
+
+---
+
+# 10. Agent Evals ⭐⭐⭐
+
+Separate from normal LLM evals.
+
+Learn:
+
+-  trajectory evaluation 
+-  tool-call correctness 
+-  argument correctness 
+-  task completion 
+-  state-based evaluation 
+-  failure classification 
+-  benchmark design 
+-  agent reliability 
+
+Example:
+
+```
+```
+
+```
+Task
+ ↓
+Agent
+ ↓
+Trajectory
+ ↓
+┌──────────────┐
+│ Tool Eval    │
+│ State Eval   │
+│ Final Eval   │
+│ Cost         │
+│ Latency      │
+└──────────────┘
+ ↓
+Overall Score
+```
+
+**Project:**  **Agent Benchmark Platform**
+
+
+
+---
+
+# 11. AI Security
+
+**🟠**
+
+Only relevant areas:
+
+-  prompt injection 
+-  indirect prompt injection 
+-  tool poisoning 
+-  excessive agency 
+-  data exfiltration 
+-  RAG poisoning 
+-  system prompt leakage 
+-  malicious tool output 
+
+**Project:** **Agent Security Playground**
+
+will follow the exact format
