@@ -1,0 +1,17 @@
+
+list of topics to be comopleted
+
+
+RAG
+├── 1. RAG Fundamentals
+├── 2. Retrieval Pipeline
+├── 3. Document Ingestion
+├── 4. Chunking Strategies
+├── 5. Embedding + Retrieval
+├── 6. Metadata Filtering
+├── 7. Reranking
+├── 8. Context Construction
+├── 9. Query Transformation
+├── 10. Hybrid RAG
+├── 11. RAG Evaluation
+└── 12. Production RAG Architecture
