@@ -339,4 +339,27 @@ Only relevant areas:
 
 **Project:** **Agent Security Playground**
 
-will follow the exact format
+---
+
+# 12. Agent Negotiation ⭐⭐⭐
+
+**High priority for multi-agent systems and autonomous enterprise workflows.**
+
+Learn:
+
+-  negotiation lifecycle and participants
+-  bilateral and multilateral protocols (Rubinstein, Contract Net Protocol)
+-  concession curves (Boulware, Linear, Conceder, Tit-for-Tat)
+-  anchoring strategies and deadline management
+-  multi-attribute utility theory (MAUT) and preference modeling
+-  Pareto efficiency, Pareto frontier & Nash bargaining solution
+-  BATNA, reservation price & ZOPA boundaries
+-  multi-agent architecture (Buyer, Seller, Coordinator)
+-  state management, privacy isolation & value leakage defense
+-  negotiation using LangGraph (state schemas, cycles, conditional edges)
+-  conflict resolution, arbitrator agents & human-in-the-loop escalation
+-  negotiation evaluation metrics (agreement rate, surplus extraction, Jain's fairness)
+
+**Project:** **Autonomous Enterprise B2B Procurement Platform**
+
+Multi-issue, multi-vendor autonomous contract negotiation platform featuring MAUT utility optimization, Boulware concession curves, LangGraph cyclic routing, and cryptographic audit ledgers.

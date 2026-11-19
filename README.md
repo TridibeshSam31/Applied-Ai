@@ -32,6 +32,7 @@ The goal is not to learn AI by calling an LLM API. The goal is to understand and
 - How MCP exposes backend capabilities to models
 - How single agents and multi-agent systems plan, remember, and recover from failure
 - How agent frameworks structure state graphs, reducers, conditional loops, and checkpointing
+- How autonomous agents bargain, model utility, resolve conflicts, and negotiate contracts
 - How agents are evaluated, benchmarked, and monitored in CI/CD and production
 - How AI-specific security failures arise and are mitigated
 
@@ -58,6 +59,8 @@ Agentic Frameworks
       ↓
 Multi-Agent Systems
       ↓
+Agent Negotiation
+      ↓
 Agent Evaluations
       ↓
 AI Security
@@ -81,8 +84,9 @@ Status legend: **Complete** (notes written), **In progress**, **Planned**.
 | 6 | [Agents](./Agents) | Foundations, ReAct, tool architecture, planning and decomposition, memory, state management, single-agent architecture, error handling, Alembic migrations | Complete |
 | 7 | [Agentic Frameworks](./Agentic%20FrameWorks) | Framework rationale, LangChain fundamentals, models/prompts/parsers, LCEL, tool calling, LangGraph state graphs, nodes & reducers, conditional routing, checkpointing, async & parallel execution | Complete |
 | 8 | [Multi-Agent Systems](./Multi-Agent%20Systems) | Architectures, communication, orchestration and delegation, shared memory, parallel vs sequential execution, conflict resolution and failure handling | Complete |
-| 9 | [Agent Evaluations](./Agent%20Evaluations) | Evaluation fundamentals, agent metrics, dataset & test case design, LLM-as-a-judge, trajectory & tool evaluation, evaluation frameworks & experimentation, production monitoring, CI/CD regression testing | Complete |
-| 10 | [AI Security](./Ai%20Security) | Prompt injection, indirect injection, tool poisoning, RAG poisoning, data exfiltration, excessive agency, system prompt leakage, malicious tool output | Complete (notes) |
+| 9 | [Agent Negotiation](./Agent%20Negotiation) | Lifecycle, protocols (Rubinstein, CNP), concession curves (Boulware, Linear), utility modeling (MAUT), BATNA/ZOPA, LangGraph cycles, arbitration & HITL, metrics | Complete |
+| 10 | [Agent Evaluations](./Agent%20Evaluations) | Evaluation fundamentals, agent metrics, dataset & test case design, LLM-as-a-judge, trajectory & tool evaluation, evaluation frameworks & experimentation, production monitoring, CI/CD regression testing | Complete |
+| 11 | [AI Security](./Ai%20Security) | Prompt injection, indirect injection, tool poisoning, RAG poisoning, data exfiltration, excessive agency, system prompt leakage, malicious tool output | Complete (notes) |
 
 The detailed learning order is maintained in [`topics.txt`](./topics.txt).
 
@@ -102,6 +106,7 @@ Each area has an associated implementation project. Notes come first; implementa
 | MCP | **Customer Support MCP Server** | Authenticated, tenant-isolated MCP server with idempotent mutations, audit logging, and contract and security tests ([spec](./mcp-engineering-handbook/project/README.md)) | Specification complete |
 | Agents | **Enterprise Task Agent** | Multi-step workflow agent (find unpaid invoice, check eligibility, create ticket, notify customer) with full trajectory storage | Planned |
 | Agentic Frameworks | **Stateful Graph Agent** | Cyclic, stateful task execution graph in LangGraph with checkpointing, conditional routing, and async tool fan-out | Planned |
+| Agent Negotiation | **Autonomous Enterprise B2B Procurement Platform** | Multi-issue, multi-vendor autonomous bargaining platform with MAUT utility scoring, Boulware concession curves, LangGraph cyclic routing, and cryptographic audit ledgers | Complete |
 | Evals | **LLM Eval Harness** | Dataset, model, evaluator, score, and report pipeline that makes prompt and model changes measurable | Planned |
 | Agent Evals | **Agent Benchmark Platform** | Trajectory and tool evaluation harness grading agent runs against golden test suites, state assertions, and cost/latency budgets | Planned |
 | Security | **Agent Security Playground** | Controlled reproductions of common AI security failures with defensive mechanisms | Planned |
@@ -180,6 +185,7 @@ Applied-Ai/
 ├── Agents/                      # Foundations, ReAct, planning, memory, state, errors, tool architecture
 ├── Agentic FrameWorks/          # LangChain, LCEL, LangGraph state graphs, reducers, conditional loops, checkpointing, parallel execution
 ├── Multi-Agent Systems/         # Architectures, communication, orchestration, shared memory, failure handling
+├── Agent Negotiation/           # 10 topics: protocols, concession curves, MAUT utility, ZOPA, LangGraph cycles, arbitration, metrics, capstone
 ├── Agent Evaluations/           # Metrics, golden datasets, LLM-as-a-judge, trajectory evaluation, frameworks, CI/CD regression testing
 ├── Ai Security/                 # Eight AI-specific security topics
 ├── topics.txt                   # Full learning roadmap
