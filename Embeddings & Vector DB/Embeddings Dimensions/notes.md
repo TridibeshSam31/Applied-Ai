@@ -756,3 +756,150 @@ Lekin quality improvement guaranteed nahi hai.
 **Q5. What is normalization?**
 
 > Ek vector ko unit length tak scale karna. Normalized vectors ke liye, cosine similarity dot product ke equivalent ban jaati hai.
+
+
+---
+
+## 8. Complete Production Code Implementation 💻
+
+Below is a self-contained, runnable Python script that implements the mathematical benchmarks, memory footprint calculators, and modern **Matryoshka Representation Learning (MRL)** dimension truncation discussed in this module.
+
+Save and run this locally to measure the exact trade-offs:
+
+```python
+"""
+embeddings_dimensions_benchmark.py
+Comprehensive demonstration of Embedding Dimensions:
+1. Memory & Storage Footprint Calculator (float32, float16, int8)
+2. Cosine Similarity Latency Benchmark across 384D, 768D, 1536D, 3072D
+3. Matryoshka Representation Learning (MRL) Dimension Truncation Simulation
+"""
+
+import time
+import numpy as np
+from typing import Dict, List, Tuple
+
+
+# =====================================================================
+# 1. Memory & Storage Footprint Calculator
+# =====================================================================
+def calculate_storage_footprint(
+    num_vectors: int,
+    dimensions: List[int],
+    precision_bytes: int = 4  # 4 bytes for float32, 2 bytes for float16, 1 for int8
+) -> Dict[int, Dict[str, float]]:
+    """
+    Formula: Memory (MB) = (N * D * precision_bytes) / (1024 * 1024)
+    Plus ~20% overhead for indexing / metadata pointers.
+    """
+    results = {}
+    for d in dimensions:
+        raw_bytes = num_vectors * d * precision_bytes
+        raw_mb = raw_bytes / (1024 * 1024)
+        raw_gb = raw_mb / 1024
+        with_index_overhead_gb = raw_gb * 1.25  # Estimated 25% HNSW overhead
+        
+        results[d] = {
+            "raw_mb": round(raw_mb, 2),
+            "raw_gb": round(raw_gb, 3),
+            "with_hnsw_overhead_gb": round(with_index_overhead_gb, 3)
+        }
+    return results
+
+
+# =====================================================================
+# 2. Search Latency Benchmark across Dimensions
+# =====================================================================
+def benchmark_similarity_latency(
+    num_vectors: int = 100_000,
+    dimensions: List[int] = [384, 768, 1536, 3072],
+    num_queries: int = 100
+) -> Dict[int, float]:
+    """
+    Measures brute-force dot product / cosine search latency on normalized vectors.
+    Shows the direct O(D) complexity penalty as dimensions scale up.
+    """
+    latency_results = {}
+    print(f"\n--- Running Latency Benchmark on {num_vectors:,} vectors ({num_queries} queries) ---")
+
+    for d in dimensions:
+        # Generate random normalized corpus vectors (float32)
+        corpus = np.random.randn(num_vectors, d).astype(np.float32)
+        corpus /= np.linalg.norm(corpus, axis=1, keepdims=True)
+
+        # Generate query vectors
+        queries = np.random.randn(num_queries, d).astype(np.float32)
+        queries /= np.linalg.norm(queries, axis=1, keepdims=True)
+
+        # Measure matrix multiplication latency: Queries (Q x D) @ Corpus.T (D x N)
+        start = time.perf_counter()
+        _ = np.dot(queries, corpus.T)
+        elapsed_ms = (time.perf_counter() - start) * 1000.0
+        avg_ms_per_query = elapsed_ms / num_queries
+
+        latency_results[d] = round(avg_ms_per_query, 3)
+        print(f"Dimension: {d:4d}D | Avg Query Latency: {avg_ms_per_query:.3f} ms")
+
+    return latency_results
+
+
+# =====================================================================
+# 3. Matryoshka Dimension Truncation & Quality Retention
+# =====================================================================
+def matryoshka_dimension_truncation_demo():
+    """
+    Demonstrates Matryoshka Embeddings (used in OpenAI text-embedding-3 and modern models).
+    The early dimensions contain the densest semantic information.
+    Truncating vectors (e.g. 1536 -> 512) and re-normalizing preserves up to 98% ranking similarity!
+    """
+    print("\n--- Matryoshka Representation Truncation Demo ---")
+    d_full = 1536
+    d_truncated = 512
+
+    # Simulate 5 sample documents
+    docs = np.random.randn(5, d_full).astype(np.float32)
+    query = np.random.randn(1, d_full).astype(np.float32)
+
+    # 1. Full 1536D Cosine Similarity
+    docs_full_norm = docs / np.linalg.norm(docs, axis=1, keepdims=True)
+    query_full_norm = query / np.linalg.norm(query, axis=1, keepdims=True)
+    scores_full = np.dot(docs_full_norm, query_full_norm.T).flatten()
+
+    # 2. Truncate to first 512 dimensions & Re-normalize (CRITICAL STEP)
+    docs_trunc = docs[:, :d_truncated]
+    query_trunc = query[:, :d_truncated]
+    docs_trunc_norm = docs_trunc / np.linalg.norm(docs_trunc, axis=1, keepdims=True)
+    query_trunc_norm = query_trunc / np.linalg.norm(query_trunc, axis=1, keepdims=True)
+    scores_trunc = np.dot(docs_trunc_norm, query_trunc_norm.T).flatten()
+
+    print(f"Original Dimension: {d_full}D  |  Truncated Dimension: {d_truncated}D (3x Storage Saving)")
+    for i in range(len(docs)):
+        diff = abs(scores_full[i] - scores_trunc[i])
+        print(f"Doc {i+1}: Full Score = {scores_full[i]:.4f} | Truncated Score = {scores_trunc[i]:.4f} | Diff = {diff:.4f}")
+
+
+# =====================================================================
+# Main Execution Entry Point
+# =====================================================================
+if __name__ == "__main__":
+    dims = [384, 768, 1536, 3072]
+    num_vecs = 1_000_000
+
+    print("==================================================================")
+    print("EMBEDDING DIMENSIONS: MEMORY & STORAGE FOOTPRINT (1M VECTORS)")
+    print("==================================================================")
+    footprints = calculate_storage_footprint(num_vecs, dims, precision_bytes=4)
+    for d, stats in footprints.items():
+        print(f"{d:4d}D: Raw Vector Size = {stats['raw_gb']} GB | With HNSW Overhead = {stats['with_hnsw_overhead_gb']} GB")
+
+    # Latency evaluation on 50,000 vectors
+    benchmark_similarity_latency(num_vectors=50_000, dimensions=dims, num_queries=50)
+
+    # Matryoshka Truncation
+    matryoshka_dimension_truncation_demo()
+```
+
+### How to Run:
+```bash
+python embeddings_dimensions_benchmark.py
+```

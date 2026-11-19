@@ -943,3 +943,264 @@ Ab hamara Phase 3 pipeline aisa dikhta hai:
 **6. HNSW or IVF?**
 
 > Workload pe depend karta hai. Recall, p95 latency, memory, index size, build time, aur update behavior benchmark kar.
+
+
+---
+
+## 9. Complete Production Implementation: HNSW & IVF Simulation & Recall Benchmark 💻
+
+Below is an end-to-end Python implementation that demonstrates:
+1. **Brute Force (Exact k-NN)** as the ground truth.
+2. **Inverted File Index (IVF)** implementation with k-means centroids, inverted lists, and configurable `nprobe`.
+3. **Hierarchical Navigable Small World (HNSW)** simulation using skip-list greedy routing across graph layers.
+4. **Empirical Recall@k and Latency Benchmark** comparing Brute Force vs IVF vs HNSW.
+
+```python
+"""
+hnsw_ivf_benchmark.py
+End-to-End Implementation of Approximate Nearest Neighbor (ANN) Algorithms:
+- Exact Brute-Force (Flat Scan) Ground Truth
+- IVF (Inverted File Index) with Voronoi Partitions & nprobe
+- HNSW (Hierarchical Navigable Small World) multi-layer graph search
+- Recall@K and Latency evaluation
+"""
+
+import time
+import math
+import heapq
+import numpy as np
+from typing import List, Dict, Tuple, Set
+
+
+# =====================================================================
+# 1. Exact Brute-Force Ground Truth (Flat Scan)
+# =====================================================================
+def brute_force_knn(query: np.ndarray, corpus: np.ndarray, k: int = 10) -> List[int]:
+    """
+    Computes exact Euclidean distance against all N vectors: O(N * D).
+    Returns indices of top-k nearest neighbors.
+    """
+    dists = np.linalg.norm(corpus - query, axis=1)
+    return np.argsort(dists)[:k].tolist()
+
+
+# =====================================================================
+# 2. IVF (Inverted File Index) Implementation
+# =====================================================================
+class SimpleIVFIndex:
+    """
+    Partitions the vector space into C Voronoi cells using k-means centroids.
+    At query time, searches only the closest 'nprobe' clusters.
+    """
+    def __init__(self, n_clusters: int = 32, nprobe: int = 4):
+        self.n_clusters = n_clusters
+        self.nprobe = nprobe
+        self.centroids: np.ndarray = None
+        self.inverted_lists: Dict[int, List[int]] = {}
+        self.corpus: np.ndarray = None
+
+    def fit_and_build(self, corpus: np.ndarray, max_iter: int = 10):
+        self.corpus = corpus
+        n_samples, d = corpus.shape
+        
+        # Simple K-Means initialization (random selection)
+        indices = np.random.choice(n_samples, self.n_clusters, replace=False)
+        self.centroids = corpus[indices].copy()
+        
+        # Lloyd's K-Means clustering
+        for _ in range(max_iter):
+            # Assign points to nearest centroid
+            dists = np.linalg.norm(corpus[:, np.newaxis, :] - self.centroids[np.newaxis, :, :], axis=2)
+            assignments = np.argmin(dists, axis=1)
+            
+            # Update centroids
+            for c in range(self.n_clusters):
+                cluster_pts = corpus[assignments == c]
+                if len(cluster_pts) > 0:
+                    self.centroids[c] = cluster_pts.mean(axis=0)
+
+        # Build Inverted Lists
+        self.inverted_lists = {c: [] for c in range(self.n_clusters)}
+        dists = np.linalg.norm(corpus[:, np.newaxis, :] - self.centroids[np.newaxis, :, :], axis=2)
+        assignments = np.argmin(dists, axis=1)
+        for idx, c in enumerate(assignments):
+            self.inverted_lists[c].append(idx)
+
+    def search(self, query: np.ndarray, k: int = 10) -> List[int]:
+        # Step 1: Find 'nprobe' closest centroids
+        centroid_dists = np.linalg.norm(self.centroids - query, axis=1)
+        nearest_clusters = np.argsort(centroid_dists)[:self.nprobe]
+
+        # Step 2: Search vectors inside only those clusters
+        candidate_indices = []
+        for c in nearest_clusters:
+            candidate_indices.extend(self.inverted_lists[c])
+
+        if not candidate_indices:
+            return []
+
+        candidates = self.corpus[candidate_indices]
+        dists = np.linalg.norm(candidates - query, axis=1)
+        top_local = np.argsort(dists)[:k]
+        return [candidate_indices[i] for i in top_local]
+
+
+# =====================================================================
+# 3. Simple HNSW Multi-Layer Graph Simulation
+# =====================================================================
+class SimpleHNSWIndex:
+    """
+    Hierarchical Navigable Small World graph.
+    Vectors exist across multiple layers with exponentially decaying probability.
+    Greedy search descends from top layer to bottom layer.
+    """
+    def __init__(self, m: int = 8, ef_search: int = 16, ml: float = 1.0 / math.log(2)):
+        self.m = m                     # Max connections per node
+        self.ef_search = ef_search     # Size of dynamic candidate list during search
+        self.ml = ml                   # Multiplier for layer assignment
+        self.layers: List[Dict[int, Set[int]]] = []  # layer -> {node_id: set(neighbors)}
+        self.entry_point: int = None
+        self.max_layer: int = -1
+        self.corpus: np.ndarray = None
+
+    def _random_level(self) -> int:
+        r = np.random.uniform(0, 1)
+        return int(-math.log(r) * self.ml)
+
+    def build(self, corpus: np.ndarray):
+        self.corpus = corpus
+        n_samples = len(corpus)
+
+        for i in range(n_samples):
+            level = self._random_level()
+            while len(self.layers) <= level:
+                self.layers.append({})
+
+            # Connect node to existing nodes at each assigned level
+            for l in range(level + 1):
+                self.layers[l][i] = set()
+                existing_nodes = list(self.layers[l].keys())
+                if len(existing_nodes) > 1:
+                    # Pick up to M closest neighbors
+                    other_nodes = [node for node in existing_nodes if node != i]
+                    if other_nodes:
+                        vecs = self.corpus[other_nodes]
+                        dists = np.linalg.norm(vecs - self.corpus[i], axis=1)
+                        closest = np.argsort(dists)[:self.m]
+                        for idx in closest:
+                            neighbor = other_nodes[idx]
+                            self.layers[l][i].add(neighbor)
+                            self.layers[l][neighbor].add(i)
+
+            if self.entry_point is None or level > self.max_layer:
+                self.entry_point = i
+                self.max_layer = level
+
+    def search(self, query: np.ndarray, k: int = 10) -> List[int]:
+        if self.entry_point is None:
+            return []
+
+        curr_obj = self.entry_point
+        curr_dist = float(np.linalg.norm(self.corpus[curr_obj] - query))
+
+        # Top layers: Greedy search down to layer 0
+        for l in range(self.max_layer, 0, -1):
+            changed = True
+            while changed:
+                changed = False
+                for neighbor in self.layers[l].get(curr_obj, set()):
+                    d = float(np.linalg.norm(self.corpus[neighbor] - query))
+                    if d < curr_dist:
+                        curr_dist = d
+                        curr_obj = neighbor
+                        changed = True
+
+        # Layer 0: Search with priority queue (ef_search)
+        candidates = [(curr_dist, curr_obj)]
+        visited = {curr_obj}
+        w = [(curr_dist, curr_obj)]
+
+        while candidates:
+            c_dist, c_id = heapq.heappop(candidates)
+            if c_dist > w[-1][0] and len(w) >= self.ef_search:
+                break
+
+            for neighbor in self.layers[0].get(c_id, set()):
+                if neighbor not in visited:
+                    visited.add(neighbor)
+                    n_dist = float(np.linalg.norm(self.corpus[neighbor] - query))
+                    if n_dist < w[-1][0] or len(w) < self.ef_search:
+                        heapq.heappush(candidates, (n_dist, neighbor))
+                        w.append((n_dist, neighbor))
+                        w.sort(key=lambda x: x[0])
+                        if len(w) > self.ef_search:
+                            w.pop()
+
+        return [item[1] for item in w[:k]]
+
+
+# =====================================================================
+# 4. Evaluation & Benchmark Runner (Recall@K and Speedup)
+# =====================================================================
+def run_ann_benchmark():
+    np.random.seed(42)
+    n_corpus = 5_000
+    d = 128
+    n_queries = 50
+    k = 10
+
+    print(f"Generating synthetic dataset: {n_corpus} vectors, {d} dimensions...")
+    corpus = np.random.randn(n_corpus, d).astype(np.float32)
+    queries = np.random.randn(n_queries, d).astype(np.float32)
+
+    # 1. Ground truth via Brute Force
+    print("Computing Ground Truth (Exact Flat Scan)...")
+    t0 = time.perf_counter()
+    ground_truth = [brute_force_knn(q, corpus, k=k) for q in queries]
+    bf_time = (time.perf_counter() - t0) * 1000
+
+    # 2. IVF Index
+    print("Building and querying IVF index (clusters=32, nprobe=4)...")
+    ivf = SimpleIVFIndex(n_clusters=32, nprobe=4)
+    ivf.fit_and_build(corpus)
+
+    t0 = time.perf_counter()
+    ivf_results = [ivf.search(q, k=k) for q in queries]
+    ivf_time = (time.perf_counter() - t0) * 1000
+
+    # 3. HNSW Index
+    print("Building and querying HNSW index...")
+    hnsw = SimpleHNSWIndex(m=8, ef_search=16)
+    hnsw.build(corpus)
+
+    t0 = time.perf_counter()
+    hnsw_results = [hnsw.search(q, k=k) for q in queries]
+    hnsw_time = (time.perf_counter() - t0) * 1000
+
+    # Compute Recall@K
+    def calculate_recall(pred_list, true_list):
+        recalls = []
+        for p, t in zip(pred_list, true_list):
+            intersection = len(set(p).intersection(set(t)))
+            recalls.append(intersection / len(t))
+        return np.mean(recalls) * 100.0
+
+    ivf_recall = calculate_recall(ivf_results, ground_truth)
+    hnsw_recall = calculate_recall(hnsw_results, ground_truth)
+
+    print("\n=======================================================")
+    print(f"BENCHMARK RESULTS (Top-{k} on {n_queries} queries):")
+    print("=======================================================")
+    print(f"Brute Force (Exact) : Recall = 100.0% | Latency = {bf_time:.2f} ms")
+    print(f"IVF (nprobe=4)      : Recall = {ivf_recall:5.1f}% | Latency = {ivf_time:.2f} ms (Speedup: {bf_time/ivf_time:.1f}x)")
+    print(f"HNSW (ef=16)        : Recall = {hnsw_recall:5.1f}% | Latency = {hnsw_time:.2f} ms (Speedup: {bf_time/hnsw_time:.1f}x)")
+
+
+if __name__ == "__main__":
+    run_ann_benchmark()
+```
+
+### Execution:
+```bash
+python hnsw_ivf_benchmark.py
+```

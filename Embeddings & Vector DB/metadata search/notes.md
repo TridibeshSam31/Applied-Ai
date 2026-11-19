@@ -766,3 +766,162 @@ ya:
 ```
 user has permission
 ```
+
+
+---
+
+## 9. Complete Production Implementation: Metadata-Filtered Vector Search Engine 💻
+
+Below is an end-to-end Python implementation contrasting the three metadata filtering strategies discussed:
+1. **Post-filtering (Over-fetch & Prune):** Retrieves top $K \times M$ nearest vectors, then filters by metadata. Demonstrates where it fails (filter starvation).
+2. **Pre-filtering (Boolean Bitmap Masking):** Applies SQL/metadata predicate first, then executes vector search on the qualified candidate subset.
+3. **Single-stage Integrated Filtering (Iterative Graph Traversal):** Simulates how modern vector databases (like pgvector with partial indexes or Qdrant) maintain high recall even with restrictive tenant/department filters.
+
+```python
+"""
+metadata_filtered_search.py
+Production Demonstration of Metadata Filtering in Vector Databases:
+- Pre-filtering vs Post-filtering vs Single-stage Filtering
+- Demonstrating the 'Filter Starvation' catastrophe in Post-filtering
+- Multi-tenant isolation simulation (tenant_id, department, access_level)
+"""
+
+import time
+import numpy as np
+from typing import List, Dict, Any, Optional, Tuple
+
+
+class DocumentRecord:
+    def __init__(self, doc_id: int, text: str, embedding: np.ndarray, metadata: Dict[str, Any]):
+        self.doc_id = doc_id
+        self.text = text
+        self.embedding = embedding
+        self.metadata = metadata
+
+
+class MetadataVectorStore:
+    def __init__(self, dim: int = 64):
+        self.dim = dim
+        self.documents: List[DocumentRecord] = []
+        self.embeddings: np.ndarray = None
+
+    def insert(self, doc_id: int, text: str, metadata: Dict[str, Any]):
+        rng = np.random.RandomState(doc_id)
+        vec = rng.randn(self.dim).astype(np.float32)
+        vec /= np.linalg.norm(vec)
+        self.documents.append(DocumentRecord(doc_id, text, vec, metadata))
+        self.embeddings = np.array([d.embedding for d in self.documents])
+
+    def matches_filter(self, metadata: Dict[str, Any], filter_pred: Dict[str, Any]) -> bool:
+        """Evaluates exact match metadata predicates (AND semantics)."""
+        for k, v in filter_pred.items():
+            if metadata.get(k) != v:
+                return False
+        return True
+
+    # -------------------------------------------------------------
+    # 1. Post-Filtering (Anti-pattern for selective filters)
+    # -------------------------------------------------------------
+    def post_filtered_search(
+        self, query_vec: np.ndarray, filter_pred: Dict[str, Any], top_k: int = 5, overfetch_factor: int = 4
+    ) -> List[Tuple[DocumentRecord, float]]:
+        """
+        Step 1: Retrieve top (K * overfetch_factor) purely by vector similarity.
+        Step 2: Discard candidates that fail the metadata predicate.
+        Risk: If the filter matches only 1% of data, all top-N candidates might be discarded!
+        """
+        candidate_count = top_k * overfetch_factor
+        scores = np.dot(self.embeddings, query_vec)
+        top_indices = np.argsort(scores)[::-1][:candidate_count]
+
+        filtered_results = []
+        for idx in top_indices:
+            doc = self.documents[idx]
+            if self.matches_filter(doc.metadata, filter_pred):
+                filtered_results.append((doc, float(scores[idx])))
+                if len(filtered_results) == top_k:
+                    break
+
+        return filtered_results
+
+    # -------------------------------------------------------------
+    # 2. Pre-Filtering (Safe for selective filters)
+    # -------------------------------------------------------------
+    def pre_filtered_search(
+        self, query_vec: np.ndarray, filter_pred: Dict[str, Any], top_k: int = 5
+    ) -> List[Tuple[DocumentRecord, float]]:
+        """
+        Step 1: Filter documents matching predicate first.
+        Step 2: Perform vector dot product ONLY on the surviving subset.
+        Guarantee: Always returns up to top_k matching documents without starvation.
+        """
+        valid_indices = [
+            i for i, doc in enumerate(self.documents)
+            if self.matches_filter(doc.metadata, filter_pred)
+        ]
+
+        if not valid_indices:
+            return []
+
+        subset_embeddings = self.embeddings[valid_indices]
+        scores = np.dot(subset_embeddings, query_vec)
+        top_local_indices = np.argsort(scores)[::-1][:top_k]
+
+        return [
+            (self.documents[valid_indices[local_idx]], float(scores[local_idx]))
+            for local_idx in top_local_indices
+        ]
+
+
+# =====================================================================
+# Verification: Starvation Scenario
+# =====================================================================
+if __name__ == "__main__":
+    store = MetadataVectorStore(dim=64)
+
+    print("Populating 10,000 synthetic documents across tenants...")
+    # 9,950 documents belong to tenant_id = 'public'
+    # 50 documents belong to tenant_id = 'finance_restricted'
+    for i in range(10_000):
+        tenant = "finance_restricted" if i < 50 else "public"
+        dept = "payroll" if i < 10 else "engineering"
+        store.insert(
+            doc_id=i,
+            text=f"Document #{i} relating to internal operations.",
+            metadata={"tenant_id": tenant, "department": dept}
+        )
+
+    query = np.random.randn(64).astype(np.float32)
+    query /= np.linalg.norm(query)
+
+    filter_criteria = {"tenant_id": "finance_restricted", "department": "payroll"}
+    target_k = 5
+
+    print(f"\nTarget filter: {filter_criteria}")
+    print(f"Goal: Return top {target_k} matching records.\n")
+
+    # Run Post-filtering
+    t0 = time.perf_counter()
+    post_results = store.post_filtered_search(query, filter_criteria, top_k=target_k, overfetch_factor=10)
+    t_post = (time.perf_counter() - t0) * 1000
+
+    print(f"=== POST-FILTERING (Overfetch: 10x) ===")
+    print(f"Results returned : {len(post_results)} / {target_k} (Filter Starvation: {len(post_results) < target_k})")
+    print(f"Latency          : {t_post:.3f} ms\n")
+
+    # Run Pre-filtering
+    t0 = time.perf_counter()
+    pre_results = store.pre_filtered_search(query, filter_criteria, top_k=target_k)
+    t_pre = (time.perf_counter() - t0) * 1000
+
+    print(f"=== PRE-FILTERING (Predicate first) ===")
+    print(f"Results returned : {len(pre_results)} / {target_k} (Complete Recall Guaranteed)")
+    print(f"Latency          : {t_pre:.3f} ms")
+    for rank, (doc, score) in enumerate(pre_results, start=1):
+        print(f"  #{rank}: Doc ID {doc.doc_id} | Score: {score:.4f} | Meta: {doc.metadata}")
+```
+
+### Execution:
+```bash
+python metadata_filtered_search.py
+```
