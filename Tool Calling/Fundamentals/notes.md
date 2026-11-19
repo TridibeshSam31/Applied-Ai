@@ -835,3 +835,194 @@ Soch:
              ↓           ↓
         Another tool    Answer
 ```
+
+
+---
+
+## 9. Complete Production Implementation: Core Tool Calling Execution Loop 💻
+
+Below is an end-to-end, runnable Python script demonstrating the fundamental **Tool Calling Loop from scratch** without using LangChain or any agent framework.
+It implements:
+1. **Tool Registry & JSON Schema Definitions:** Explicit JSON schema specification for tools.
+2. **The Turn-by-Turn ReAct Loop:** LLM request $\to$ Tool Call selection $\to$ Schema validation & execution $\to$ Tool response ingestion $\to$ Final natural language answer.
+3. **Multi-Turn Context Management:** Preserving message roles (`user`, `assistant` with `tool_calls`, `tool` with `tool_call_id`).
+
+```python
+"""
+tool_calling_fundamentals.py
+Complete Implementation of the Core Function/Tool Calling Loop from Scratch.
+Zero frameworks: Direct implementation of tool schemas, dispatch, and message state.
+"""
+
+import json
+import uuid
+from typing import Dict, Any, List, Callable
+
+
+# =====================================================================
+# 1. Tool Implementations (Real Python Functions)
+# =====================================================================
+def get_customer_profile(customer_id: str) -> Dict[str, Any]:
+    """Fetch customer contact and status information."""
+    database = {
+        "CUST-101": {"name": "Aarav Sharma", "email": "aarav@example.com", "tier": "Enterprise"},
+        "CUST-102": {"name": "Priya Patel", "email": "priya@example.com", "tier": "Standard"}
+    }
+    return database.get(customer_id, {"error": "Customer not found"})
+
+
+def get_invoice_balance(customer_id: str) -> Dict[str, Any]:
+    """Retrieve unpaid balance and overdue days for a customer."""
+    invoices = {
+        "CUST-101": {"customer_id": "CUST-101", "unpaid_balance": 125000, "overdue_days": 18, "currency": "INR"},
+        "CUST-102": {"customer_id": "CUST-102", "unpaid_balance": 0, "overdue_days": 0, "currency": "INR"}
+    }
+    return invoices.get(customer_id, {"error": "No invoices for customer"})
+
+
+# =====================================================================
+# 2. Tool Registry & JSON Schema Definition
+# =====================================================================
+TOOLS_REGISTRY: Dict[str, Callable] = {
+    "get_customer_profile": get_customer_profile,
+    "get_invoice_balance": get_invoice_balance
+}
+
+TOOLS_SCHEMAS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_customer_profile",
+            "description": "Fetch customer contact and subscription tier by customer ID.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "customer_id": {"type": "string", "description": "e.g. CUST-101"}
+                },
+                "required": ["customer_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_invoice_balance",
+            "description": "Fetch unpaid billing balance and overdue days for a customer ID.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "customer_id": {"type": "string", "description": "e.g. CUST-101"}
+                },
+                "required": ["customer_id"]
+            }
+        }
+    }
+]
+
+
+# =====================================================================
+# 3. Simulated LLM Engine (Demonstrates the decision boundary)
+# =====================================================================
+class MockLLM:
+    """Simulates an LLM responding with structured tool calls or final text."""
+    def __init__(self):
+        self.step = 0
+
+    def generate(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]]) -> Dict[str, Any]:
+        last_msg = messages[-1]
+        
+        # Turn 1: LLM sees user query, decides it needs invoice data
+        if self.step == 0:
+            self.step += 1
+            return {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": f"call_{uuid.uuid4().hex[:8]}",
+                        "type": "function",
+                        "function": {
+                            "name": "get_invoice_balance",
+                            "arguments": json.dumps({"customer_id": "CUST-101"})
+                        }
+                    }
+                ]
+            }
+
+        # Turn 2: LLM has received tool result, outputs final synthesized answer
+        else:
+            tool_content = json.loads(last_msg["content"])
+            balance = tool_content.get("unpaid_balance", 0)
+            days = tool_content.get("overdue_days", 0)
+            return {
+                "role": "assistant",
+                "content": f"Customer CUST-101 currently has an unpaid balance of INR {balance:,}, which is {days} days overdue.",
+                "tool_calls": None
+            }
+
+
+# =====================================================================
+# 4. The Core Tool Execution Loop
+# =====================================================================
+def run_tool_calling_loop(user_query: str):
+    llm = MockLLM()
+    messages: List[Dict[str, Any]] = [
+        {"role": "user", "content": user_query}
+    ]
+
+    print(f"\n[USER PROMPT]: {user_query}\n" + "="*60)
+    max_turns = 5
+
+    for turn in range(max_turns):
+        print(f"\n--- Loop Turn {turn + 1} ---")
+        
+        # Step A: Send conversation history + available tool schemas to LLM
+        response = llm.generate(messages=messages, tools=TOOLS_SCHEMAS)
+        
+        # Step B: Check if LLM returned final text or requested tool execution
+        if not response.get("tool_calls"):
+            print(f"[ASSISTANT FINAL ANSWER]:\n{response['content']}")
+            messages.append(response)
+            break
+
+        # Step C: Append assistant's tool_calls message to history
+        messages.append(response)
+        tool_calls = response["tool_calls"]
+        print(f"[LLM DECISION]: LLM requested {len(tool_calls)} tool call(s).")
+
+        # Step D: Dispatch and execute requested tools
+        for call in tool_calls:
+            call_id = call["id"]
+            fn_name = call["function"]["name"]
+            raw_args = call["function"]["arguments"]
+            args = json.loads(raw_args)
+
+            print(f"  -> Executing: {fn_name}({args}) [call_id={call_id}]")
+            
+            # Look up function in registry
+            if fn_name in TOOLS_REGISTRY:
+                fn_result = TOOLS_REGISTRY[fn_name](**args)
+            else:
+                fn_result = {"error": f"Tool '{fn_name}' not implemented in registry."}
+
+            print(f"  <- Tool Output: {fn_result}")
+
+            # Step E: Append tool output with corresponding tool_call_id
+            messages.append({
+                "role": "tool",
+                "tool_call_id": call_id,
+                "name": fn_name,
+                "content": json.dumps(fn_result)
+            })
+
+    print("="*60 + "\n[CONVERSATION COMPLETED SUCCESSFULLY]")
+
+
+if __name__ == "__main__":
+    run_tool_calling_loop("Check the billing and payment status for customer CUST-101.")
+```
+
+### Execution:
+```bash
+python tool_calling_fundamentals.py
+```

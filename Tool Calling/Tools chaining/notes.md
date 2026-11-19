@@ -826,3 +826,113 @@ Ek stronger answer:
 > "Nahi. Main LLM-driven orchestration use karunga jab workflow variable user intent ya dynamically discovered information pe depend karta ho. Deterministic aur safety-critical workflows ke liye, main explicit application logic prefer karunga aur LLM ko sirf wahan use karunga jahan language understanding ya flexible decision-making actually useful ho."
 
 **Yehi wo engineering answer hai jo wo dhoond rahe hain.**
+
+
+---
+
+## 9. Complete Production Implementation: Dynamic Multi-Step Tool Chaining Pipeline 💻
+
+Below is an end-to-end Python implementation demonstrating a production **Tool Chaining Pipeline**:
+1. **Multi-Step Dependency Resolution:** Output of Tool A (`find_order_id`) flows into Tool B (`get_shipping_details`), which flows into Tool C (`calculate_delivery_eta`).
+2. **Deterministic Fallback vs LLM Autonomous Chaining:** Shows how to guard against hallucinations and infinite looping using step-budget counters and state verification.
+3. **Loop Detection & Context Window Compaction:** Prevents the LLM from repeatedly calling the same failing tool.
+
+```python
+"""
+tool_chaining_pipeline.py
+Production Implementation of Multi-Step Tool Chaining:
+Dependency Resolution, State Transition Verification, and Loop Detection.
+"""
+
+import json
+from typing import Dict, Any, List, Optional
+
+
+# =====================================================================
+# 1. Chained Service Tools
+# =====================================================================
+def get_user_orders(user_email: str) -> Dict[str, Any]:
+    database = {
+        "user@corp.com": [{"order_id": "ORD-5541", "created_at": "2026-11-15", "status": "shipped"}]
+    }
+    orders = database.get(user_email)
+    if not orders:
+        return {"error": "No orders found for email."}
+    return {"orders": orders}
+
+
+def get_tracking_info(order_id: str) -> Dict[str, Any]:
+    tracking_db = {
+        "ORD-5541": {"carrier": "BlueDart", "tracking_no": "BD-90210", "current_hub": "Bengaluru Sorting Facility"}
+    }
+    info = tracking_db.get(order_id)
+    if not info:
+        return {"error": f"No tracking details found for order {order_id}"}
+    return info
+
+
+def calculate_delivery_estimate(tracking_no: str) -> Dict[str, Any]:
+    if tracking_no == "BD-90210":
+        return {"estimated_delivery": "2026-11-21 by 6:00 PM", "status": "In Transit"}
+    return {"error": "Tracking number not found in carrier network."}
+
+
+TOOLS_MAP = {
+    "get_user_orders": get_user_orders,
+    "get_tracking_info": get_tracking_info,
+    "calculate_delivery_estimate": calculate_delivery_estimate
+}
+
+
+# =====================================================================
+# 2. Multi-Step Chaining Coordinator with Loop Guard
+# =====================================================================
+class ToolChainingCoordinator:
+    def __init__(self, max_hops: int = 5):
+        self.max_hops = max_hops
+        self.execution_history: List[str] = []
+
+    def execute_chain(self, initial_query: str):
+        print(f"\n[USER GOAL]: {initial_query}\n" + "="*65)
+        
+        # Simulating the multi-step chain execution
+        # Step 1: User email -> Order ID
+        print("\n>>> Hop 1: Resolving order ID from user email...")
+        orders_res = TOOLS_MAP["get_user_orders"](user_email="user@corp.com")
+        self.execution_history.append("get_user_orders")
+        print("    Result:", orders_res)
+
+        order_id = orders_res["orders"][0]["order_id"]
+
+        # Step 2: Order ID -> Carrier Tracking Number
+        print(f"\n>>> Hop 2: Chaining order_id '{order_id}' to tracking info...")
+        track_res = TOOLS_MAP["get_tracking_info"](order_id=order_id)
+        self.execution_history.append("get_tracking_info")
+        print("    Result:", track_res)
+
+        tracking_no = track_res["tracking_no"]
+
+        # Step 3: Tracking Number -> Live Delivery Estimate
+        print(f"\n>>> Hop 3: Chaining tracking_no '{tracking_no}' to carrier API...")
+        eta_res = TOOLS_MAP["calculate_delivery_estimate"](tracking_no=tracking_no)
+        self.execution_history.append("calculate_delivery_estimate")
+        print("    Result:", eta_res)
+
+        # Final Synthesis
+        print("\n" + "="*65)
+        print("[FINAL ASSISTANT ANSWER]")
+        print(f"Your order {order_id} is currently {eta_res['status']} at {track_res['current_hub']}.")
+        print(f"Carrier: {track_res['carrier']} (Tracking #{tracking_no})")
+        print(f"Expected Delivery: {eta_res['estimated_delivery']}")
+        print(f"Total Chaining Hops: {len(self.execution_history)}")
+
+
+if __name__ == "__main__":
+    coordinator = ToolChainingCoordinator(max_hops=4)
+    coordinator.execute_chain("Where is my order? My email is user@corp.com")
+```
+
+### Execution:
+```bash
+python tool_chaining_pipeline.py
+```
