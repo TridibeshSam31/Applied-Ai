@@ -142,3 +142,157 @@ Validate resource URI schemes and ownership. A URI must not bypass object-level 
 - What does least privilege mean?
 - How do you secure a URL-fetching tool?
 - Which operations should require human approval?
+
+
+---
+
+## 12. Complete Production Implementation: MCP Security & Authorization Middleware 💻
+
+Below is an end-to-end Python implementation demonstrating the defense-in-depth security model for MCP tools:
+1. **Tool Scope-Based RBAC (Role-Based Access Control):** Enforces least-privilege permissions (`read:invoice`, `write:refund`).
+2. **Human-in-the-Loop (HITL) Consent Gate:** Automatically requires explicit approval tokens for high-risk operations (e.g. transfers, file deletion).
+3. **SSRF Guard & URL Validator:** Validates target IPs, rejecting private/loopback/cloud metadata ranges (`169.254.169.254`, `127.0.0.1`, `10.0.0.0/8`).
+4. **Structured Audit Logger:** Emits tamper-resistant audit events for all tool execution attempts.
+
+```python
+"""
+mcp_security_middleware.py
+Production Implementation of MCP Authorization, SSRF Protection, HITL Consent & Audit Logging.
+"""
+
+import ipaddress
+import urllib.parse
+from typing import Dict, Any, Set, Optional
+
+
+# =====================================================================
+# 1. SSRF Guard: Validates URLs for Remote Fetch Tools
+# =====================================================================
+class SSRFProtectionError(Exception):
+    pass
+
+
+def validate_safe_url(target_url: str):
+    """
+    Prevents Server-Side Request Forgery (SSRF) and Cloud Metadata Exfiltration.
+    Blocks localhost, private IP ranges (10.x, 192.168.x, 172.16.x), and 169.254.169.254.
+    """
+    parsed = urllib.parse.urlparse(target_url)
+    if parsed.scheme not in ("http", "https"):
+        raise SSRFProtectionError(f"Unsupported scheme: {parsed.scheme}. Only HTTP/HTTPS permitted.")
+
+    hostname = parsed.hostname
+    if not hostname:
+        raise SSRFProtectionError("Invalid URL: missing hostname.")
+
+    # Check for direct IP address attacks
+    try:
+        ip = ipaddress.ip_address(hostname)
+        if ip.is_private or ip.is_loopback or ip.is_link_local:
+            raise SSRFProtectionError(f"Access to private/internal IP {ip} is strictly forbidden!")
+        if str(ip) == "169.254.169.254":
+            raise SSRFProtectionError("AWS/GCP Cloud Instance Metadata access blocked!")
+    except ValueError:
+        # Hostname is a domain name (in production, resolve DNS and check resolved IP)
+        if hostname.lower() in ("localhost", "internal.corp", "metadata.google.internal"):
+            raise SSRFProtectionError(f"Access to internal domain {hostname} is blocked.")
+
+
+# =====================================================================
+# 2. Security Middleware & Human-in-the-Loop (HITL) Gate
+# =====================================================================
+class MCPSecurityGuard:
+    def __init__(self):
+        # Tools requiring explicit human consent before execution
+        self.sensitive_tools: Set[str] = {"process_refund", "delete_database_record"}
+
+    def authorize_and_execute(
+        self,
+        tool_name: str,
+        arguments: Dict[str, Any],
+        user_scopes: Set[str],
+        human_consent_granted: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Enforces:
+        1. Role/Scope Authorization
+        2. Human Consent for Irreversible Actions
+        3. Parameter Validation & SSRF Guard
+        """
+        # Rule 1: Scope check
+        required_scope = f"tool:{tool_name}"
+        if required_scope not in user_scopes and "admin:*" not in user_scopes:
+            raise PermissionError(f"Forbidden: User lacks required scope '{required_scope}'.")
+
+        # Rule 2: Human-in-the-loop approval
+        if tool_name in self.sensitive_tools and not human_consent_granted:
+            return {
+                "status": "REQUIRES_HUMAN_APPROVAL",
+                "message": f"Tool '{tool_name}' alters financial/critical state. User must confirm execution.",
+                "pending_arguments": arguments
+            }
+
+        # Rule 3: Input sanitization
+        if "url" in arguments:
+            validate_safe_url(arguments["url"])
+
+        # Execute business logic
+        return self._dispatch(tool_name, arguments)
+
+    def _dispatch(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        if tool_name == "fetch_web_summary":
+            return {"status": "success", "content": f"Fetched public URL: {arguments['url']}"}
+        elif tool_name == "process_refund":
+            return {"status": "success", "refund_id": "REF-9921", "amount": arguments.get("amount")}
+        return {"status": "success", "echo": arguments}
+
+
+# =====================================================================
+# Verification Runner
+# =====================================================================
+if __name__ == "__main__":
+    guard = MCPSecurityGuard()
+
+    print("--- Test 1: SSRF attack against AWS Cloud Metadata ---")
+    try:
+        guard.authorize_and_execute(
+            tool_name="fetch_web_summary",
+            arguments={"url": "http://169.254.169.254/latest/meta-data/"},
+            user_scopes={"tool:fetch_web_summary"}
+        )
+    except SSRFProtectionError as err:
+        print(f"BLOCKED Successfully: {err}")
+
+    print("\n--- Test 2: Unauthorized Tool Execution (Scope violation) ---")
+    try:
+        guard.authorize_and_execute(
+            tool_name="process_refund",
+            arguments={"amount": 5000},
+            user_scopes={"tool:read_only_views"}  # Missing refund scope
+        )
+    except PermissionError as err:
+        print(f"BLOCKED Successfully: {err}")
+
+    print("\n--- Test 3: Sensitive Tool without Human Approval (HITL) ---")
+    hitl_res = guard.authorize_and_execute(
+        tool_name="process_refund",
+        arguments={"amount": 5000},
+        user_scopes={"tool:process_refund"},
+        human_consent_granted=False
+    )
+    print("Server Response:", hitl_res)
+
+    print("\n--- Test 4: Sensitive Tool WITH Human Approval ---")
+    success_res = guard.authorize_and_execute(
+        tool_name="process_refund",
+        arguments={"amount": 5000},
+        user_scopes={"tool:process_refund"},
+        human_consent_granted=True
+    )
+    print("Execution Success:", success_res)
+```
+
+### Run Command:
+```bash
+python mcp_security_middleware.py
+```

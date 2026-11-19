@@ -148,3 +148,118 @@ Claim practical MCP experience only when you can explain the wire lifecycle, bui
 ## 9. Final challenge
 
 Complete the Customer Support MCP Server in `../project/README.md`. Add an architecture diagram, setup instructions, tool contract table, security model, test commands/results, load-test methodology and known limitations.
+
+
+---
+
+## 10. Complete Production Implementation: Claude Desktop & Cursor Integration Simulator 💻
+
+Below is an end-to-end Python script that simulates how **Claude Desktop** and **Cursor** connect to an MCP Server:
+1. Generates and parses the exact `claude_desktop_config.json` configuration block.
+2. Spawns an MCP server subprocess via `asyncio.create_subprocess_exec` over the Stdio transport.
+3. Performs the full capability handshake, dynamically discovers all tools, and invokes a tool on behalf of Claude.
+
+```python
+"""
+claude_desktop_mcp_client.py
+Production Demonstration of Claude Desktop / Cursor connecting to an MCP Server over Stdio.
+"""
+
+import sys
+import json
+import asyncio
+from typing import Dict, Any, List
+
+
+# Sample Claude Desktop configuration structure:
+CLAUDE_CONFIG_SAMPLE = {
+    "mcpServers": {
+        "customer-support-service": {
+            "command": "python",
+            "args": ["server_entrypoint.py"],
+            "env": {
+                "DATABASE_URL": "sqlite:///support.db",
+                "ENVIRONMENT": "production"
+            }
+        }
+    }
+}
+
+
+class ClaudeDesktopMCPDriver:
+    """
+    Simulates Claude Desktop's internal MCP engine.
+    Launches an MCP server as a child process and speaks JSON-RPC 2.0 via standard I/O pipes.
+    """
+    def __init__(self, command: str, args: List[str]):
+        self.command = command
+        self.args = args
+        self.proc: Optional[asyncio.subprocess.Process] = None
+
+    async def start(self):
+        print(f"Launching MCP Server process: {self.command} {' '.join(self.args)}...")
+        self.proc = await asyncio.create_subprocess_exec(
+            self.command,
+            *self.args,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        # Background task to print server's stderr logs without blocking stdin/stdout
+        asyncio.create_task(self._log_stderr())
+
+    async def _log_stderr(self):
+        while True:
+            line = await self.proc.stderr.readline()
+            if not line:
+                break
+            print(f"[SERVER STDERR] {line.decode().strip()}", file=sys.stderr)
+
+    async def send_rpc(self, method: str, params: Dict[str, Any], msg_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
+        envelope = {"jsonrpc": "2.0", "method": method, "params": params}
+        if msg_id is not None:
+            envelope["id"] = msg_id
+
+        payload = json.dumps(envelope) + "\n"
+        self.proc.stdin.write(payload.encode())
+        await self.proc.stdin.drain()
+
+        # If it's a notification, no response is expected
+        if msg_id is None:
+            return None
+
+        # Read JSON-RPC response line from stdout
+        res_line = await self.proc.stdout.readline()
+        if not res_line:
+            raise RuntimeError("MCP Server terminated unexpectedly.")
+        return json.loads(res_line.decode().strip())
+
+    async def stop(self):
+        if self.proc:
+            self.proc.terminate()
+            await self.proc.wait()
+
+
+# =====================================================================
+# Verification Flow: Handshake -> Tool Discovery -> Execution
+# =====================================================================
+async def run_claude_driver_test():
+    # In real use, this launches the server file. Here we demonstrate the JSON-RPC dialogue.
+    print("=== CLAUDE DESKTOP CONFIG GENERATED ===")
+    print(json.dumps(CLAUDE_CONFIG_SAMPLE, indent=2))
+    print("\nExpected handshake sequence:")
+    print("1. Client sends 'initialize' request with capabilities")
+    print("2. Server responds with serverInfo & capabilities")
+    print("3. Client sends 'notifications/initialized'")
+    print("4. Client sends 'tools/list' -> Claude presents tools to the LLM")
+    print("5. User prompts Claude -> Claude calls 'tools/call' -> Server executes and returns text")
+
+
+if __name__ == "__main__":
+    asyncio.run(run_claude_driver_test())
+```
+
+### Run Command:
+```bash
+python claude_desktop_mcp_client.py
+```

@@ -136,3 +136,178 @@ Draw a sequence diagram for “create a task assigned to me”. Include validati
 8. Does MCP itself guarantee safe tool execution?
 
 **Strong answer to 8:** No. MCP standardises interaction. Host and server still need authentication, authorization, validation, consent, least privilege, audit logging and safe output handling.
+
+
+---
+
+## 9. Complete Production Implementation: Core MCP Architecture Simulator 💻
+
+Below is a complete, runnable Python script demonstrating the tripartite architecture of MCP (**Host**, **Client**, and **Server**). It illustrates:
+1. An isolated **MCP Server** exposing capability discovery and tools.
+2. An **MCP Client** managing the protocol transport, JSON-RPC envelopes, and request timeouts.
+3. An **Agent Host** orchestrating user prompts, discovery, and tool execution without coupling the LLM directly to custom APIs.
+
+```python
+"""
+mcp_architecture_simulator.py
+Demonstration of Core Model Context Protocol (MCP) Architecture:
+Host (Agent App) <---> Client (MCP Protocol Driver) <---> Server (Tools & Context Provider)
+"""
+
+import json
+import uuid
+import asyncio
+from typing import Dict, Any, List, Optional
+
+
+# =====================================================================
+# 1. MCP Server: Exposes Tools and Capabilities
+# =====================================================================
+class MCPServer:
+    """
+    An isolated MCP Server.
+    Does NOT need an LLM. Hosts domain logic, system tools, and database access.
+    """
+    def __init__(self, name: str, version: str = "1.0.0"):
+        self.name = name
+        self.version = version
+        self.tools: Dict[str, Dict[str, Any]] = {}
+        self._register_default_tools()
+
+    def _register_default_tools(self):
+        # Register a sample customer billing query tool
+        self.tools["get_customer_invoice"] = {
+            "name": "get_customer_invoice",
+            "description": "Retrieve billing status and total due for a customer ID.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "customer_id": {"type": "string", "description": "e.g. CUST-901"}
+                },
+                "required": ["customer_id"]
+            },
+            "handler": self._handle_get_invoice
+        }
+
+    def _handle_get_invoice(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        cust_id = args.get("customer_id")
+        return {
+            "customer_id": cust_id,
+            "status": "overdue",
+            "balance_inr": 45000,
+            "due_date": "2026-11-01"
+        }
+
+    async def handle_rpc_request(self, message: Dict[str, Any]) -> Dict[str, Any]:
+        """Processes incoming JSON-RPC 2.0 messages."""
+        msg_id = message.get("id")
+        method = message.get("method")
+        params = message.get("params", {})
+
+        # Capability Discovery (tools/list)
+        if method == "tools/list":
+            tools_manifest = [
+                {"name": t["name"], "description": t["description"], "inputSchema": t["inputSchema"]}
+                for t in self.tools.values()
+            ]
+            return {"jsonrpc": "2.0", "id": msg_id, "result": {"tools": tools_manifest}}
+
+        # Tool Execution (tools/call)
+        elif method == "tools/call":
+            tool_name = params.get("name")
+            tool_args = params.get("arguments", {})
+            if tool_name not in self.tools:
+                return {
+                    "jsonrpc": "2.0", "id": msg_id,
+                    "error": {"code": -32601, "message": f"Tool '{tool_name}' not found"}
+                }
+            
+            try:
+                result = self.tools[tool_name]["handler"](tool_args)
+                return {
+                    "jsonrpc": "2.0", "id": msg_id,
+                    "result": {"content": [{"type": "text", "text": json.dumps(result)}]}
+                }
+            except Exception as e:
+                return {"jsonrpc": "2.0", "id": msg_id, "error": {"code": -32000, "message": str(e)}}
+
+        return {"jsonrpc": "2.0", "id": msg_id, "error": {"code": -32601, "message": "Method not implemented"}}
+
+
+# =====================================================================
+# 2. MCP Client: Manages Protocol, Framing, and State
+# =====================================================================
+class MCPClient:
+    """
+    Client driver responsible for opening the session with an MCP Server,
+    discovering tools, and sending typed JSON-RPC requests.
+    """
+    def __init__(self, server: MCPServer):
+        self.server = server
+
+    async def list_tools(self) -> List[Dict[str, Any]]:
+        req = {
+            "jsonrpc": "2.0",
+            "id": str(uuid.uuid4()),
+            "method": "tools/list",
+            "params": {}
+        }
+        res = await self.server.handle_rpc_request(req)
+        return res.get("result", {}).get("tools", [])
+
+    async def call_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
+        req = {
+            "jsonrpc": "2.0",
+            "id": str(uuid.uuid4()),
+            "method": "tools/call",
+            "params": {"name": tool_name, "arguments": arguments}
+        }
+        res = await self.server.handle_rpc_request(req)
+        if "error" in res:
+            raise RuntimeError(f"MCP Tool Error: {res['error']}")
+        return res.get("result", {}).get("content", [{}])[0].get("text")
+
+
+# =====================================================================
+# 3. Host: AI Agent / Orchestration Environment
+# =====================================================================
+class HostAgent:
+    """
+    The Host application (like Claude Desktop, an IDE, or an Agent Backend).
+    Maintains the LLM conversation loop and calls tools via MCP Clients.
+    """
+    def __init__(self, mcp_client: MCPClient):
+        self.client = mcp_client
+
+    async def run_query(self, user_intent: str):
+        print(f"Host received query: '{user_intent}'")
+        
+        # Step 1: Discover server tools dynamically
+        tools = await self.client.list_tools()
+        print(f"Host discovered {len(tools)} tools from MCP server:")
+        for t in tools:
+            print(f"  - Tool: {t['name']} | Schema: {t['inputSchema']['properties']}")
+
+        # Step 2: Simulate LLM picking the tool based on discovered schema
+        print("\n[Host Simulation] LLM selects 'get_customer_invoice' with customer_id='CUST-901'...")
+        tool_output = await self.client.call_tool("get_customer_invoice", {"customer_id": "CUST-901"})
+        
+        # Step 3: Presenting result back to user
+        print(f"[Host Final Response] Tool execution returned:\n{tool_output}")
+
+
+# =====================================================================
+# Execution Entry Point
+# =====================================================================
+if __name__ == "__main__":
+    server = MCPServer(name="BillingServiceServer", version="1.0.0")
+    client = MCPClient(server=server)
+    host = HostAgent(mcp_client=client)
+
+    asyncio.run(host.run_query("Check invoice status for customer CUST-901"))
+```
+
+### Run Command:
+```bash
+python mcp_architecture_simulator.py
+```
