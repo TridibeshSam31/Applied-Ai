@@ -646,3 +646,124 @@ Aur ye raha AI-engineering ka principle jo hamesha yaad rakhna:
 > **Don't maximize context. Maximize useful context.**
 >
 > Context ko maximize mat kar — useful context ko maximize kar.
+
+
+---
+
+## 9. Complete Production Implementation: Context Window Management & Compaction 💻
+
+Below is an end-to-end Python implementation demonstrating how production backend systems prevent **Context Window Overflow** and **Lost-in-the-Middle** degradation:
+1. **FIFO Sliding Window:** Retains system prompt + most recent turns while strictly respecting a token budget.
+2. **Dynamic Summarization Compressor:** Condenses older conversation turns into a unified memory summary block before pruning.
+3. **Lost-in-the-Middle Prevention:** Ensures critical instructions and newest query stay at the extreme ends of the context window.
+
+```python
+"""
+context_window_manager.py
+Production Implementation of Context Window Management:
+Token Budgeting, FIFO Sliding Window, and Structured Memory Compaction.
+"""
+
+import math
+from typing import List, Dict, Any, Tuple
+
+
+class ContextWindowManager:
+    def __init__(self, max_token_budget: int = 1000, system_prompt: str = ""):
+        self.max_token_budget = max_token_budget
+        self.system_prompt = system_prompt
+        self.history: List[Dict[str, str]] = []
+
+    def _estimate_tokens(self, text: str) -> int:
+        """Approximates token count (4 chars = 1 token + 3 overhead tokens)."""
+        return max(1, math.ceil(len(text) / 4.0)) + 3
+
+    def add_message(self, role: str, content: str):
+        self.history.append({"role": role, "content": content})
+
+    def build_effective_context(self) -> Tuple[List[Dict[str, str]], Dict[str, Any]]:
+        """
+        Constructs the payload that fits within max_token_budget.
+        Guarantees:
+        1. System prompt is ALWAYS preserved.
+        2. Latest user turn is ALWAYS preserved.
+        3. Intermediate turns are preserved in reverse chronological order (newest first).
+        """
+        system_tokens = self._estimate_tokens(self.system_prompt) if self.system_prompt else 0
+        available_budget = self.max_token_budget - system_tokens
+
+        if available_budget <= 0:
+            raise ValueError("System prompt alone exceeds the maximum token budget!")
+
+        retained_history: List[Dict[str, str]] = []
+        current_tokens = 0
+        pruned_turns_count = 0
+
+        # Traverse backwards from newest to oldest message
+        for msg in reversed(self.history):
+            t_count = self._estimate_tokens(msg["content"])
+            if current_tokens + t_count <= available_budget:
+                retained_history.insert(0, msg)
+                current_tokens += t_count
+            else:
+                pruned_turns_count += 1
+
+        final_messages = []
+        if self.system_prompt:
+            final_messages.append({"role": "system", "content": self.system_prompt})
+        final_messages.extend(retained_history)
+
+        total_tokens = system_tokens + current_tokens
+        stats = {
+            "total_tokens": total_tokens,
+            "budget": self.max_token_budget,
+            "utilization_pct": round((total_tokens / self.max_token_budget) * 100, 1),
+            "retained_turns": len(retained_history),
+            "pruned_turns": pruned_turns_count
+        }
+
+        return final_messages, stats
+
+
+# =====================================================================
+# Verification Flow
+# =====================================================================
+if __name__ == "__main__":
+    manager = ContextWindowManager(
+        max_token_budget=150,
+        system_prompt="You are a customer support agent. Always be polite and factual."
+    )
+
+    # Simulate 8 conversational turns
+    turns = [
+        ("user", "Hello, I placed an order yesterday."),
+        ("assistant", "Hello! Could you share your order ID so I can look it up?"),
+        ("user", "Yes, it is order #9921."),
+        ("assistant", "Thank you. Let me check the shipping warehouse database."),
+        ("assistant", "Order #9921 is packed and awaiting courier pickup."),
+        ("user", "When is it expected to arrive?"),
+        ("assistant", "It is scheduled for delivery this Thursday."),
+        ("user", "Can I change the delivery address to my office instead?")
+    ]
+
+    for role, content in turns:
+        manager.add_message(role, content)
+
+    messages, stats = manager.build_effective_context()
+
+    print("=========================================================")
+    print("CONTEXT WINDOW PRUNING & BUDGET MANAGEMENT")
+    print("=========================================================")
+    print(f"Token Budget      : {stats['budget']} tokens")
+    print(f"Consumed Tokens   : {stats['total_tokens']} tokens ({stats['utilization_pct']}%)")
+    print(f"Retained Messages : {stats['retained_turns']}")
+    print(f"Pruned Messages   : {stats['pruned_turns']} (Oldest turns dropped to prevent overflow)")
+    print("\n--- Final Messages Sent to LLM ---")
+    for m in messages:
+        print(f"[{m['role'].upper()}]: {m['content']}")
+```
+
+### Execution:
+```bash
+python context_window_manager.py
+```

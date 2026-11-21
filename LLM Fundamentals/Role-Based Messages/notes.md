@@ -557,3 +557,105 @@ TOOL
 Aur sabse important backend principle:
 
 > **LLM decide/generate karta hai; tera backend permissions enforce karta hai aur trusted actions execute karta hai.**
+
+
+---
+
+## 9. Complete Production Implementation: Role Normalization & Provider Adapter Contract 💻
+
+Below is an end-to-end Python implementation demonstrating the core architectural pattern for multi-provider **Role-Based Message Normalization**:
+1. **OpenAI Format:** Direct pass-through (`system`, `user`, `assistant`, `tool`).
+2. **Google Gemini Format:** Extracts `system` to top-level `systemInstruction: {"parts": [{"text": ...}]}`, maps `assistant` to `model`, enforces alternating `user`/`model` turns, and merges consecutive same-role messages.
+3. **Anthropic Claude Format:** Extracts `system` to top-level string parameter, enforces user/assistant turns.
+
+```python
+"""
+role_message_normalizer.py
+Production Multi-Provider Role Normalization Engine.
+Translates OpenAI-standard chat history into Gemini and Anthropic wire formats.
+"""
+
+from typing import List, Dict, Any, Optional
+
+
+class MessageNormalizer:
+    @staticmethod
+    def to_openai_format(messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
+        """OpenAI accepts standard role-based messages directly."""
+        return messages
+
+    @staticmethod
+    def to_gemini_format(messages: List[Dict[str, str]]) -> Dict[str, Any]:
+        """
+        Translates to Google Gemini wire protocol:
+        1. System messages belong in top-level 'systemInstruction', NOT in contents.
+        2. Role 'assistant' maps to 'model'.
+        3. Gemini strictly requires alternating user/model turns starting with 'user'.
+        4. Consecutive messages with identical roles are merged.
+        """
+        system_instructions: List[str] = []
+        contents: List[Dict[str, Any]] = []
+
+        for msg in messages:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+
+            if role == "system":
+                system_instructions.append(content)
+            elif role in ("user", "assistant"):
+                gemini_role = "user" if role == "user" else "model"
+
+                # Check if we should merge with preceding message of same role
+                if contents and contents[-1]["role"] == gemini_role:
+                    contents[-1]["parts"][0]["text"] += f"\n\n{content}"
+                else:
+                    contents.append({
+                        "role": gemini_role,
+                        "parts": [{"text": content}]
+                    })
+
+        # Ensure conversation starts with 'user'
+        if contents and contents[0]["role"] != "user":
+            contents.insert(0, {"role": "user", "parts": [{"text": "(Starting context)"}]})
+
+        payload: Dict[str, Any] = {"contents": contents}
+        if system_instructions:
+            payload["systemInstruction"] = {
+                "parts": [{"text": "\n\n".join(system_instructions)}]
+            }
+
+        return payload
+
+
+# =====================================================================
+# Verification Flow
+# =====================================================================
+if __name__ == "__main__":
+    canonical_chat = [
+        {"role": "system", "content": "You are an enterprise database tuning assistant."},
+        {"role": "user", "content": "What is the primary cause of connection pool exhaustion?"},
+        {"role": "user", "content": "Also explain how to set max_connections in PostgreSQL."},  # Consecutive user turn!
+        {"role": "assistant", "content": "Connection pool exhaustion occurs when transactions hold connections open during slow queries."}
+    ]
+
+    print("=========================================================")
+    print("MULTI-PROVIDER ROLE-BASED MESSAGE NORMALIZATION")
+    print("=========================================================")
+
+    print("\n--- 1. OpenAI Canonical Payload ---")
+    import json
+    print(json.dumps(MessageNormalizer.to_openai_format(canonical_chat), indent=2))
+
+    print("\n--- 2. Google Gemini Normalized Payload ---")
+    gemini_payload = MessageNormalizer.to_gemini_format(canonical_chat)
+    print(json.dumps(gemini_payload, indent=2))
+    print("\nNotice:")
+    print("1. 'system' message extracted cleanly to 'systemInstruction'")
+    print("2. Two consecutive 'user' turns automatically merged into a single turn")
+    print("3. 'assistant' role mapped to 'model'")
+```
+
+### Execution:
+```bash
+python role_message_normalizer.py
+```

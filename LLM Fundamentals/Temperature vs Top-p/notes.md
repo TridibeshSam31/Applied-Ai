@@ -591,3 +591,110 @@ Neither → security
 
 Neither → a substitute for structured outputs/evals
 ```
+
+
+---
+
+## 9. Complete Production Implementation: Temperature & Nucleus (Top-p) Sampling Simulator 💻
+
+Below is an end-to-end Python implementation demonstrating the exact mathematical mechanisms behind **Temperature** and **Nucleus (Top-p) Sampling**:
+1. **Raw Logits $\to$ Scaled Softmax:** Demonstrates how dividing logits by temperature $T$ flattens or sharpens the probability distribution.
+2. **Top-p Nucleus Truncation:** Sorts probabilities in descending order, calculates cumulative sum, and dynamically cuts off the low-probability tail at threshold $p$.
+3. **Statistical Random Sampling:** Draws sample tokens across different temperature regimes ($T=0.1$ deterministic, $T=0.7$ balanced, $T=1.5$ chaotic).
+
+```python
+"""
+sampling_temperature_top_p.py
+Exact Mathematical Simulation of LLM Token Sampling:
+Logits -> Temperature Scaling -> Softmax -> Top-p (Nucleus) Truncation -> Random Draw.
+"""
+
+import math
+import numpy as np
+from typing import List, Tuple, Dict
+
+
+class LLMSampler:
+    def __init__(self, vocab: List[str]):
+        self.vocab = vocab
+
+    def _softmax(self, logits: np.ndarray, temperature: float = 1.0) -> np.ndarray:
+        """
+        Applies temperature scaling to raw logits:
+        P(i) = exp(z_i / T) / sum(exp(z_j / T))
+        As T -> 0, distribution approaches argmax (greedy deterministic).
+        As T -> high, distribution approaches uniform random.
+        """
+        temp = max(1e-5, temperature)  # Avoid division by zero
+        scaled = logits / temp
+        # Subtract max for numerical stability (prevents overflow in exp)
+        exp_scaled = np.exp(scaled - np.max(scaled))
+        return exp_scaled / np.sum(exp_scaled)
+
+    def sample_token(self, logits: np.ndarray, temperature: float = 0.7, top_p: float = 0.9) -> Tuple[str, Dict[str, Any]]:
+        # Step 1: Scale logits with Temperature
+        probs = self._softmax(logits, temperature=temperature)
+
+        # Step 2: Top-p (Nucleus) Filtering
+        # Sort tokens by descending probability
+        sorted_indices = np.argsort(probs)[::-1]
+        sorted_probs = probs[sorted_indices]
+        cumulative_probs = np.cumsum(sorted_probs)
+
+        # Identify cutoff threshold
+        cutoff_mask = cumulative_probs <= top_p
+        # Always retain at least the top candidate token
+        cutoff_mask[0] = True
+
+        filtered_indices = sorted_indices[cutoff_mask]
+        filtered_probs = sorted_probs[cutoff_mask]
+        # Re-normalize probabilities of surviving candidate set
+        filtered_probs /= np.sum(filtered_probs)
+
+        # Step 3: Draw a token based on filtered probability distribution
+        chosen_idx = np.random.choice(filtered_indices, p=filtered_probs)
+        chosen_token = self.vocab[chosen_idx]
+
+        candidates = [
+            {"token": self.vocab[idx], "prob": round(float(probs[idx]), 4)}
+            for idx in filtered_indices
+        ]
+
+        return chosen_token, {"candidates": candidates, "retained_count": len(filtered_indices)}
+
+
+# =====================================================================
+# Verification Flow
+# =====================================================================
+if __name__ == "__main__":
+    np.random.seed(42)
+
+    # Simulated candidate vocabulary after the prefix: "The primary purpose of an API gateway is"
+    vocabulary = ["routing", "security", "banana", "authorization", "rate-limiting", "galaxy", "monitoring"]
+    # Simulated model logits (higher = model prefers that token)
+    raw_logits = np.array([5.2, 4.8, -1.5, 4.1, 3.9, -2.8, 3.2])
+
+    sampler = LLMSampler(vocab=vocabulary)
+
+    print("=========================================================")
+    print("TEMPERATURE & TOP-P (NUCLEUS) SAMPLING ENGINE")
+    print("=========================================================")
+
+    scenarios = [
+        ("Deterministic / Strict (Code & Math)", 0.1, 0.5),
+        ("Standard / Balanced (Chatbots & Reasoning)", 0.7, 0.9),
+        ("High Creativity / Brainstorming", 1.4, 0.95),
+    ]
+
+    for label, temp, top_p in scenarios:
+        token, meta = sampler.sample_token(raw_logits, temperature=temp, top_p=top_p)
+        print(f"\nConfiguration: {label} (Temp={temp}, Top-p={top_p})")
+        print(f"  Chosen Token    : '{token}'")
+        print(f"  Surviving Pool  : {meta['retained_count']} / {len(vocabulary)} tokens")
+        print(f"  Candidates Prob : {meta['candidates']}")
+```
+
+### Execution:
+```bash
+python sampling_temperature_top_p.py
+```
