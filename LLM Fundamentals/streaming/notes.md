@@ -723,3 +723,123 @@ chunk ─────→ Client
 Key engineering idea:
 
 > **Client ko poore generation ka wait mat karwa jab provider result incrementally deliver kar sakta hai.**
+
+
+---
+
+## 9. Complete Production Implementation: Real SSE Server & Client Disconnect Cancellation 💻
+
+Below is an end-to-end Python implementation demonstrating **Production Server-Sent Events (SSE) Streaming**:
+1. **Standards-Compliant SSE Wire Format:** Formats chunks as `data: {...}\n\n` with standard `text/event-stream` headers.
+2. **Upstream Token-by-Token Generator:** Consumes and transforms upstream stream chunks.
+3. **Active Client Disconnect Detection:** Polls `await request.is_disconnected()` inside the async generator. If a user closes their browser or tab, the generator immediately `break`s, triggering context manager cleanup and aborting the upstream HTTPX streaming connection.
+4. **Final Stream Marker:** Delivers the terminal `data: [DONE]\n\n` message.
+
+```python
+"""
+real_sse_streaming.py
+Production Implementation of FastAPI Server-Sent Events (SSE) Streaming
+with Active Client Disconnection & Upstream Socket Abort.
+"""
+
+import json
+import asyncio
+from typing import AsyncGenerator
+from fastapi import FastAPI, Request
+from fastapi.responses import StreamingResponse
+
+app = FastAPI(title="SSE Streaming Gateway")
+
+
+async def upstream_llm_token_stream() -> AsyncGenerator[str, None]:
+    """Simulates an upstream provider yielding tokens one by one."""
+    tokens = [
+        "Server-Sent", " Events", " (SSE)", " stream", " tokens",
+        " incrementally", " to", " minimize", " Time-To-First-Token", " (TTFT)."
+    ]
+    for token in tokens:
+        await asyncio.sleep(0.10)  # 100ms simulated generation pause
+        yield token
+
+
+@app.post("/v1/chat/completions/stream")
+async def stream_chat_completions(request: Request):
+    """
+    OpenAI-compatible streaming route.
+    Delivers incremental delta chunks via SSE.
+    """
+    async def sse_event_publisher() -> AsyncGenerator[str, None]:
+        print(">>> [SSE Stream Opened] Client connected.")
+        try:
+            # 1. Role initial chunk
+            init_chunk = {
+                "id": "chatcmpl-stream-demo",
+                "object": "chat.completion.chunk",
+                "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}]
+            }
+            yield f"data: {json.dumps(init_chunk)}\n\n"
+
+            # 2. Stream tokens from upstream
+            async for token in upstream_llm_token_stream():
+                # CRITICAL RESILIENCE CHECK: Has the client severed connection?
+                if await request.is_disconnected():
+                    print(">>> [CLIENT DISCONNECT DETECTED] Aborting upstream stream socket to prevent token billing waste!")
+                    break
+
+                chunk = {
+                    "id": "chatcmpl-stream-demo",
+                    "object": "chat.completion.chunk",
+                    "choices": [{"index": 0, "delta": {"content": token}, "finish_reason": None}]
+                }
+                yield f"data: {json.dumps(chunk)}\n\n"
+
+            # 3. Final terminal event
+            yield "data: [DONE]\n\n"
+            print(">>> [SSE Stream Closed Normally]")
+
+        except asyncio.CancelledError:
+            print(">>> [Stream Task Cancelled] Context manager cleaning up resources.")
+            raise
+
+    return StreamingResponse(
+        sse_event_publisher(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"  # Disables Nginx reverse-proxy buffering!
+        }
+    )
+
+
+# =====================================================================
+# Standalone CLI Verification Client
+# =====================================================================
+async def run_client_simulation():
+    """Consumes the stream from the endpoint and prints tokens as they arrive."""
+    print("Simulated SSE wire stream output:\n" + "-"*50)
+    async for token in upstream_llm_token_stream():
+        chunk = {
+            "choices": [{"delta": {"content": token}}]
+        }
+        print(f"data: {json.dumps(chunk)}")
+    print("data: [DONE]\n" + "-"*50)
+
+
+if __name__ == "__main__":
+    import sys
+    if "--server" in sys.argv:
+        import uvicorn
+        uvicorn.run(app, host="0.0.0.0", port=8000)
+    else:
+        asyncio.run(run_client_simulation())
+```
+
+### Execution:
+```bash
+# Run client demonstration
+python real_sse_streaming.py
+
+# Run FastAPI SSE Server on port 8000
+python real_sse_streaming.py --server
+```

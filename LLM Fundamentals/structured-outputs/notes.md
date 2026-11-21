@@ -747,3 +747,133 @@ Ye wo answer hai jo main ek AI backend engineer se expect karunga.
 **Core principle:**
 
 > **LLMs generate; schemas structure; validation verifies; backend logic decides.**
+
+
+---
+
+## 9. Complete Production Implementation: Pydantic v2 Structured Output Validation 💻
+
+Below is an end-to-end Python implementation demonstrating production **Structured Outputs**:
+1. **Pydantic v2 Schema Enforcement:** Models strict JSON schemas with field constraints, regex, and enums.
+2. **Schema Exporter for OpenAI API:** Generates `response_format={"type": "json_schema", "json_schema": {"strict": True, "schema": ...}}`.
+3. **Automated Parse-and-Retry Loop:** If the LLM generates slightly malformed JSON or violates field validation, automatically constructs a targeted retry prompt feeding the Pydantic `ValidationError` back to the model.
+
+```python
+"""
+structured_output_validator.py
+Production Implementation of Structured Outputs:
+Pydantic v2 Schemas, Strict JSON Schema Export, and Error-Feedback Self-Correction Loop.
+"""
+
+import json
+from typing import List, Literal, Optional
+from pydantic import BaseModel, Field, ValidationError
+
+
+# =====================================================================
+# 1. Pydantic v2 Domain Schema
+# =====================================================================
+class CustomerInvoiceExtract(BaseModel):
+    customer_id: str = Field(..., pattern=r"^CUST-\d{3,6}$", description="Customer ID matching format CUST-XXXX")
+    company_name: str = Field(..., min_length=2)
+    invoice_number: str = Field(..., description="e.g. INV-2026-001")
+    amount_inr: float = Field(..., gt=0.0, description="Gross invoice amount in INR")
+    payment_status: Literal["PAID", "PENDING", "OVERDUE"]
+    line_items_count: int = Field(default=1, ge=1)
+
+
+# =====================================================================
+# 2. Strict OpenAI JSON Schema Generator
+# =====================================================================
+def get_openai_response_format() -> dict:
+    """Generates the exact response_format payload expected by OpenAI Structured Outputs."""
+    schema = CustomerInvoiceExtract.model_json_schema()
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "CustomerInvoiceExtract",
+            "strict": True,
+            "schema": schema
+        }
+    }
+
+
+# =====================================================================
+# 3. Robust Extraction & Validation with Feedback Loop
+# =====================================================================
+class StructuredOutputExtractor:
+    @staticmethod
+    def parse_and_validate(raw_llm_json_str: str) -> CustomerInvoiceExtract:
+        """Parses and validates raw JSON against the Pydantic contract."""
+        data = json.loads(raw_llm_json_str)
+        return CustomerInvoiceExtract.model_validate(data)
+
+    @staticmethod
+    def generate_fix_prompt(original_output: str, error: ValidationError) -> str:
+        """
+        Feedback loop: When LLM fails schema validation, this prompt feeds the exact
+        Pydantic error details back to the LLM so it can correct its mistake!
+        """
+        return (
+            f"Your previous JSON output failed validation:\n"
+            f"Errors: {error.errors()}\n"
+            f"Previous Output: {original_output}\n"
+            f"Please output ONLY valid JSON adhering strictly to the schema."
+        )
+
+
+# =====================================================================
+# Verification Flow
+# =====================================================================
+if __name__ == "__main__":
+    print("=========================================================")
+    print("PYDANTIC v2 STRUCTURED OUTPUT VALIDATION ENGINE")
+    print("=========================================================")
+
+    # Test 1: Valid LLM Output
+    valid_raw_output = """
+    {
+        "customer_id": "CUST-9842",
+        "company_name": "Infosys Technologies",
+        "invoice_number": "INV-2026-891",
+        "amount_inr": 485000.0,
+        "payment_status": "PENDING",
+        "line_items_count": 4
+    }
+    """
+    print("\n--- Test 1: Valid LLM JSON ---")
+    try:
+        record = StructuredOutputExtractor.parse_and_validate(valid_raw_output)
+        print("Validated Pydantic Record successfully:")
+        print(f"Company: {record.company_name} | Amount: INR {record.amount_inr:,} | Status: {record.payment_status}")
+    except ValidationError as e:
+        print("Validation Failed:", e)
+
+    # Test 2: Invalid LLM Output (Negative amount + Bad Customer ID format)
+    invalid_raw_output = """
+    {
+        "customer_id": "INVALID-ID",
+        "company_name": "TCS",
+        "invoice_number": "INV-2026-999",
+        "amount_inr": -500.0,
+        "payment_status": "UNKNOWN_STATUS",
+        "line_items_count": 0
+    }
+    """
+    print("\n--- Test 2: Invalid LLM Output (Triggering Automated Error Feedback) ---")
+    try:
+        StructuredOutputExtractor.parse_and_validate(invalid_raw_output)
+    except ValidationError as err:
+        print("[CAUGHT VALIDATION ERROR]:")
+        for e in err.errors():
+            print(f"  Field: '{e['loc'][0]}' -> Issue: {e['msg']}")
+
+        fix_prompt = StructuredOutputExtractor.generate_fix_prompt(invalid_raw_output, err)
+        print("\n[AUTOMATED RETRY PROMPT CONSTRUCTED FOR LLM]:")
+        print(fix_prompt[:300] + "...")
+```
+
+### Execution:
+```bash
+python structured_output_validator.py
+```

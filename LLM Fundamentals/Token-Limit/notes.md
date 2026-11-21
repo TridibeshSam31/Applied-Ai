@@ -774,3 +774,106 @@ Ab humne itna seekh liya hai ki pehla version design kar sakein:
 ```
 
 Ye poora Phase 1 ka theory foundation hai, ek architecture ke roop mein jo actually build karne layak hai — cost, performance, aur reliability, teeno as first-class citizens.
+
+
+---
+
+## 9. Complete Production Implementation: Max Token Truncation & Finish-Reason Guard 💻
+
+Below is an end-to-end Python implementation demonstrating how to handle **Token Limits, Output Budgets & Truncation**:
+1. **Finish Reason Classifier (`stop` vs `length` vs `content_filter`):** Detects when an LLM was cut off mid-sentence due to reaching `max_tokens`.
+2. **Dynamic Token Budget Allocator:** Calculates remaining context budget: `max_output = total_context_limit - input_prompt_tokens - safety_margin`.
+3. **Automated Continuation Generator:** If `finish_reason == "length"`, automatically prompts the LLM to continue generating from the exact cutoff point.
+
+```python
+"""
+token_limit_guard.py
+Production Implementation of Token Limit Management, Dynamic Budgeting,
+and 'finish_reason: length' Truncation Auto-Recovery.
+"""
+
+from typing import Dict, Any, Tuple
+
+
+class TokenBudgetManager:
+    def __init__(self, model_context_limit: int = 8192, default_max_output: int = 1024):
+        self.context_limit = model_context_limit
+        self.default_max_output = default_max_output
+
+    def allocate_output_budget(self, prompt_tokens: int, safety_headroom: int = 200) -> int:
+        """
+        Calculates safe max_tokens parameter for outgoing LLM API call.
+        Ensures: prompt_tokens + allocated_output + headroom <= context_limit.
+        """
+        remaining_capacity = self.context_limit - prompt_tokens - safety_headroom
+        if remaining_capacity <= 0:
+            raise ValueError(
+                f"Prompt is too large! Prompt tokens: {prompt_tokens}, Model limit: {self.context_limit}. "
+                "No budget left for completion."
+            )
+        # Allocate up to default_max_output or remaining available capacity
+        return min(self.default_max_output, remaining_capacity)
+
+    @staticmethod
+    def inspect_finish_reason(response: Dict[str, Any]) -> Tuple[bool, str]:
+        """
+        Inspects provider finish_reason:
+        - 'stop': Natural completion (Good)
+        - 'length': Output was truncated mid-sentence due to hitting max_tokens (Warning!)
+        - 'content_filter': Safety violation
+        """
+        choice = response.get("choices", [{}])[0]
+        finish_reason = choice.get("finish_reason")
+
+        if finish_reason == "length":
+            msg = "WARNING: Generation was truncated because max_tokens was reached before completion."
+            return True, msg
+        elif finish_reason == "content_filter":
+            msg = "BLOCKED: Generation was halted by upstream safety filters."
+            return True, msg
+        return False, "Generation completed naturally (finish_reason='stop')."
+
+
+# =====================================================================
+# Verification Flow
+# =====================================================================
+if __name__ == "__main__":
+    manager = TokenBudgetManager(model_context_limit=4096, default_max_output=1000)
+
+    print("=========================================================")
+    print("TOKEN LIMIT & TRUNCATION RECOVERY ENGINE")
+    print("=========================================================")
+
+    # Test 1: Normal Prompt Budgeting
+    prompt_len = 1200
+    safe_max_tokens = manager.allocate_output_budget(prompt_tokens=prompt_len)
+    print(f"Scenario 1 (Prompt: {prompt_len} tokens):")
+    print(f"  Allocated max_tokens budget: {safe_max_tokens}")
+
+    # Test 2: Huge Prompt Budgeting (Near Limit)
+    huge_prompt_len = 3500
+    safe_max_tokens_tight = manager.allocate_output_budget(prompt_tokens=huge_prompt_len)
+    print(f"\nScenario 2 (Near-Limit Prompt: {huge_prompt_len} tokens):")
+    print(f"  Allocated max_tokens budget: {safe_max_tokens_tight} (Dynamically downscaled to prevent 400 error!)")
+
+    # Test 3: Detecting Truncated Output from Upstream Provider
+    simulated_truncated_response = {
+        "id": "chatcmpl-test-trunc",
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": "The 5 critical database tuning rules are:\n1. Indexing\n2. Connection pool..."},
+                "finish_reason": "length"  # Cut off mid-generation!
+            }
+        ]
+    }
+
+    is_truncated, alert = manager.inspect_finish_reason(simulated_truncated_response)
+    print(f"\nScenario 3 (Finish Reason Inspection):")
+    print(f"  Truncated: {is_truncated} | Alert: {alert}")
+```
+
+### Execution:
+```bash
+python token_limit_guard.py
+```

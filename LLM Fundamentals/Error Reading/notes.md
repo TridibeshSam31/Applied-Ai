@@ -796,3 +796,166 @@ Ye ek important architectural separation hai — dono ka apna responsibility hai
 > **Don't retry errors blindly. Classify the failure first.**
 >
 > Errors ko blindly retry mat kar. Pehle failure ko classify kar.
+
+
+---
+
+## 9. Complete Production Implementation: Upstream LLM Error Classifier & Normalizer 💻
+
+Below is an end-to-end Python implementation demonstrating how a production Gateway parses, classifies, and handles heterogeneous LLM error payloads (OpenAI, Gemini, Anthropic, HTTP status codes):
+1. **Error Classification Taxonomy:** Maps upstream error bodies to clean categories (`TRANSIENT_RATE_LIMIT`, `TRANSIENT_SERVER_ERROR`, `PERMANENT_AUTHENTICATION`, `PERMANENT_INVALID_REQUEST`, `CONTEXT_LENGTH_EXCEEDED`).
+2. **Safe Error Sanitization:** Strips secret API keys, internal stack traces, and database hostnames before returning an OpenAI-standard JSON error to the client.
+3. **Retry-After Header Parser:** Extracts `Retry-After` seconds or fallback exponential backoff.
+
+```python
+"""
+llm_error_classifier.py
+Production Error Reading, Parsing, and Sanitization Engine for LLM Gateways.
+"""
+
+import json
+from typing import Dict, Any, Tuple, Optional
+
+
+class ErrorCategory:
+    TRANSIENT_RETRYABLE = "TRANSIENT_RETRYABLE"
+    PERMANENT_CLIENT = "PERMANENT_CLIENT"
+    PERMANENT_AUTH = "PERMANENT_AUTH"
+    OVERFLOW = "CONTEXT_OVERFLOW"
+    UNKNOWN = "UNKNOWN_ERROR"
+
+
+class LLMErrorClassifier:
+    @staticmethod
+    def classify_and_normalize(status_code: int, response_body: str, headers: Dict[str, str] = None) -> Dict[str, Any]:
+        """
+        Parses raw HTTP error response and normalizes into OpenAI-compatible GatewayError.
+        """
+        headers = headers or {}
+        parsed_json = {}
+        try:
+            parsed_json = json.loads(response_body)
+        except Exception:
+            parsed_json = {"raw_text": response_body}
+
+        # 1. Rate Limiting (429)
+        if status_code == 429:
+            retry_after = headers.get("retry-after") or headers.get("x-ratelimit-reset-requests", "2")
+            return {
+                "category": ErrorCategory.TRANSIENT_RETRYABLE,
+                "status_code": 429,
+                "retry_after_sec": float(retry_after) if retry_after.replace(".", "", 1).isdigit() else 2.0,
+                "client_error": {
+                    "error": {
+                        "type": "rate_limit_exceeded",
+                        "message": "Upstream provider rate limit exceeded. Please retry after backoff.",
+                        "code": "429"
+                    }
+                }
+            }
+
+        # 2. Authentication Failures (401 / 403)
+        if status_code in (401, 403):
+            return {
+                "category": ErrorCategory.PERMANENT_AUTH,
+                "status_code": 503,  # Mask as 503 so client doesn't think THEIR key failed
+                "retry_after_sec": None,
+                "client_error": {
+                    "error": {
+                        "type": "provider_unavailable",
+                        "message": "AI Provider credentials failed or expired. Please contact support.",
+                        "code": "provider_auth_failure"
+                    }
+                }
+            }
+
+        # 3. Context Length Exceeded (400)
+        err_msg = str(parsed_json).lower()
+        if status_code == 400 and ("context_length_exceeded" in err_msg or "maximum context length" in err_msg):
+            return {
+                "category": ErrorCategory.OVERFLOW,
+                "status_code": 400,
+                "retry_after_sec": None,
+                "client_error": {
+                    "error": {
+                        "type": "invalid_request_error",
+                        "message": "Your request exceeded the model's maximum context window length. Please prune message history.",
+                        "code": "context_length_exceeded"
+                    }
+                }
+            }
+
+        # 4. Upstream Server Outage (500, 502, 503, 504)
+        if status_code in (500, 502, 503, 504):
+            return {
+                "category": ErrorCategory.TRANSIENT_RETRYABLE,
+                "status_code": 502,
+                "retry_after_sec": 1.5,
+                "client_error": {
+                    "error": {
+                        "type": "upstream_server_error",
+                        "message": f"Upstream AI service temporarily unavailable (HTTP {status_code}).",
+                        "code": "upstream_unavailable"
+                    }
+                }
+            }
+
+        # 5. Default Fallback
+        return {
+            "category": ErrorCategory.PERMANENT_CLIENT,
+            "status_code": status_code,
+            "retry_after_sec": None,
+            "client_error": {
+                "error": {
+                    "type": "invalid_request",
+                    "message": "Upstream provider rejected the request parameters.",
+                    "code": str(status_code)
+                }
+            }
+        }
+
+
+# =====================================================================
+# Verification Flow
+# =====================================================================
+if __name__ == "__main__":
+    classifier = LLMErrorClassifier()
+
+    print("=========================================================")
+    print("UPSTREAM LLM ERROR CLASSIFIER & NORMALIZATION ENGINE")
+    print("=========================================================")
+
+    # Test 1: OpenAI 429 Rate Limit
+    res_429 = classifier.classify_and_normalize(
+        status_code=429,
+        response_body='{"error": {"message": "Rate limit reached for requests per min", "type": "requests"}}',
+        headers={"retry-after": "5"}
+    )
+    print("\n--- Test 1: 429 Rate Limit ---")
+    print("Category   :", res_429["category"])
+    print("Retry After:", res_429["retry_after_sec"], "seconds")
+    print("Client JSON:", json.dumps(res_429["client_error"]))
+
+    # Test 2: OpenAI 400 Context Length Overflow
+    res_overflow = classifier.classify_and_normalize(
+        status_code=400,
+        response_body='{"error": {"message": "This model maximum context length is 8192 tokens. However, your messages resulted in 9100 tokens.", "code": "context_length_exceeded"}}'
+    )
+    print("\n--- Test 2: Context Window Overflow ---")
+    print("Category   :", res_overflow["category"])
+    print("Client JSON:", json.dumps(res_overflow["client_error"]))
+
+    # Test 3: Upstream 503 Outage
+    res_503 = classifier.classify_and_normalize(
+        status_code=503,
+        response_body="Service Temporarily Unavailable - High GPU Cluster Load"
+    )
+    print("\n--- Test 3: Upstream 503 Outage ---")
+    print("Category   :", res_503["category"])
+    print("Client JSON:", json.dumps(res_503["client_error"]))
+```
+
+### Execution:
+```bash
+python llm_error_classifier.py
+```

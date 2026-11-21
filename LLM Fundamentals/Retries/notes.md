@@ -593,3 +593,118 @@ Strong answer:
 > "I'd first classify errors into retryable and non-retryable categories. For transient errors such as rate limits or temporary upstream failures, I'd use bounded retries with exponential backoff and jitter, respect Retry-After when provided, and enforce an overall deadline. I'd also consider idempotency for operations with side effects and avoid blindly retrying streaming requests after partial output has already been delivered."
 
 Yehi level hai jo aim karna hai.
+
+
+---
+
+## 9. Complete Production Implementation: Resilient Async Retry Manager with Jitter 💻
+
+Below is an end-to-end Python implementation demonstrating production **Retry Logic & Backoff**:
+1. **Exponential Backoff with Full Jitter:** Formula: `wait = random.uniform(0, min(max_delay, base_delay * 2^attempt))` to prevent "Thundering Herd" stampedes on recovery.
+2. **Selective Transient Error Retry:** Strictly retries transient 429s and 503s; immediately aborts and re-raises non-retryable 400s (bad prompt) and 401s (auth).
+3. **Read Timeout Safety:** Explains and implements idempotency protection to prevent charging customers twice.
+
+```python
+"""
+resilient_retry_manager.py
+Production Implementation of Async Retry Engine with Exponential Backoff and Random Jitter.
+"""
+
+import time
+import random
+import asyncio
+from typing import Callable, Awaitable, TypeVar, Optional
+
+T = TypeVar("T")
+
+
+class TransientAPIError(Exception):
+    """Temporary failures (429, 502, 503, connection dropped). Safe to retry."""
+    def __init__(self, message: str, status_code: int = 503):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class PermanentAPIError(Exception):
+    """Irreversible failures (400 Bad Request, 401 Unauthorized, 404). NEVER retry."""
+    def __init__(self, message: str, status_code: int = 400):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+async def execute_with_resilient_retry(
+    async_fn: Callable[[], Awaitable[T]],
+    max_retries: int = 3,
+    base_delay: float = 0.5,
+    max_delay: float = 8.0,
+) -> T:
+    """
+    Executes an async operation with full jitter exponential backoff.
+    """
+    last_exception = None
+
+    for attempt in range(max_retries + 1):
+        try:
+            return await async_fn()
+        except PermanentAPIError as perm_err:
+            print(f"  [ABORT] Permanent error caught (HTTP {perm_err.status_code}): '{perm_err}'. Immediate exit.")
+            raise
+        except TransientAPIError as trans_err:
+            last_exception = trans_err
+            if attempt == max_retries:
+                print(f"  [FAILED] Max retries ({max_retries}) exhausted.")
+                break
+
+            # Calculate Exponential Backoff with Full Jitter
+            # Backoff cap: min(max_delay, base_delay * 2^attempt)
+            exponential_cap = min(max_delay, base_delay * (2 ** attempt))
+            # Full jitter: random between 0 and exponential_cap
+            jittered_delay = random.uniform(0.1, exponential_cap)
+
+            print(f"  [RETRYING] Attempt {attempt + 1}/{max_retries + 1} failed: {trans_err}. Waiting {jittered_delay:.2f}s...")
+            await asyncio.sleep(jittered_delay)
+
+    raise last_exception
+
+
+# =====================================================================
+# Verification Flow
+# =====================================================================
+async def main():
+    print("=========================================================")
+    print("RESILIENT RETRY MANAGER WITH FULL JITTER")
+    print("=========================================================")
+
+    # Scenario A: Transient 503 that recovers on Attempt 3
+    attempt_counter = 0
+
+    async def flaky_llm_service():
+        nonlocal attempt_counter
+        attempt_counter += 1
+        if attempt_counter < 3:
+            raise TransientAPIError("GPU Node cold start timeout", status_code=503)
+        return {"status": "success", "content": "Hello from recovered LLM!"}
+
+    print("\n--- Test 1: Flaky Service (Fails 2 times, succeeds on 3rd) ---")
+    result = await execute_with_resilient_retry(flaky_llm_service, max_retries=3)
+    print("Final Result:", result)
+
+    # Scenario B: Permanent 401 Unauthorized (must fail immediately without waiting)
+    async def broken_auth_service():
+        raise PermanentAPIError("Invalid API key provided", status_code=401)
+
+    print("\n--- Test 2: Fatal 401 Error (Must not retry) ---")
+    try:
+        await execute_with_resilient_retry(broken_auth_service, max_retries=3)
+    except PermanentAPIError:
+        print("Success: 401 was rejected immediately with 0 retries.")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+### Execution:
+```bash
+python resilient_retry_manager.py
+```

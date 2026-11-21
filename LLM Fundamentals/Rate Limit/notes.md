@@ -631,3 +631,128 @@ Strong answer.
 Aur yaad rakho:
 
 > **Rate limiting controls traffic over time. Concurrency limiting controls work happening right now.**
+
+
+---
+
+## 9. Complete Production Implementation: Token Bucket & Sliding Window Rate Limiter 💻
+
+Below is an end-to-end Python implementation demonstrating production **Rate Limiting** across both RPM (Requests Per Minute) and TPM (Tokens Per Minute):
+1. **Token Bucket Algorithm:** Smooths burst traffic while enforcing long-term limits.
+2. **Dual-Limiter (RPM + TPM):** Enforces simultaneous limits on total requests AND token volume (preventing one gigantic 100k-token prompt from starving the gateway).
+3. **HTTP 429 Header Generation:** Generates standard `X-RateLimit-Limit`, `X-RateLimit-Remaining`, and `Retry-After` headers.
+
+```python
+"""
+llm_rate_limiter.py
+Production Implementation of Dual-Constraint Rate Limiter:
+RPM (Requests Per Minute) + TPM (Tokens Per Minute) using Token Bucket Algorithm.
+"""
+
+import time
+import asyncio
+from typing import Dict, Any, Tuple
+
+
+class TokenBucket:
+    def __init__(self, capacity: float, refill_rate_per_sec: float):
+        self.capacity = capacity
+        self.refill_rate = refill_rate_per_sec
+        self.tokens = capacity
+        self.last_update = time.monotonic()
+
+    def _refill(self):
+        now = time.monotonic()
+        delta = now - self.last_update
+        self.tokens = min(self.capacity, self.tokens + delta * self.refill_rate)
+        self.last_update = now
+
+    def acquire(self, amount: float = 1.0) -> Tuple[bool, float]:
+        """
+        Attempts to consume tokens.
+        Returns: (allowed, wait_seconds_needed)
+        """
+        self._refill()
+        if self.tokens >= amount:
+            self.tokens -= amount
+            return True, 0.0
+
+        # Calculate time needed to replenish required tokens
+        deficit = amount - self.tokens
+        wait_seconds = deficit / self.refill_rate
+        return False, wait_seconds
+
+
+class DualLLMRateLimiter:
+    """
+    Protects downstream LLM APIs from exceeding provider RPM / TPM quotas.
+    """
+    def __init__(self, max_rpm: int = 60, max_tpm: int = 50_000):
+        self.rpm = max_rpm
+        self.tpm = max_tpm
+        # 60 RPM -> 1 request per second
+        self.request_bucket = TokenBucket(capacity=max_rpm, refill_rate_per_sec=max_rpm / 60.0)
+        # 50,000 TPM -> ~833 tokens per second
+        self.token_bucket = TokenBucket(capacity=max_tpm, refill_rate_per_sec=max_tpm / 60.0)
+
+    def check_and_consume(self, estimated_tokens: int) -> Tuple[bool, Dict[str, Any]]:
+        # Check RPM
+        req_allowed, req_wait = self.request_bucket.acquire(amount=1.0)
+        if not req_allowed:
+            return False, {
+                "status_code": 429,
+                "reason": "RPM_LIMIT_EXCEEDED",
+                "retry_after": round(req_wait, 2),
+                "headers": {
+                    "Retry-After": str(int(req_wait) + 1),
+                    "X-RateLimit-Limit-RPM": str(self.rpm),
+                    "X-RateLimit-Remaining-RPM": str(int(self.request_bucket.tokens))
+                }
+            }
+
+        # Check TPM
+        tok_allowed, tok_wait = self.token_bucket.acquire(amount=estimated_tokens)
+        if not tok_allowed:
+            # Re-fund the 1 request token since request was rejected
+            self.request_bucket.tokens = min(self.request_bucket.capacity, self.request_bucket.tokens + 1.0)
+            return False, {
+                "status_code": 429,
+                "reason": "TPM_LIMIT_EXCEEDED",
+                "retry_after": round(tok_wait, 2),
+                "headers": {
+                    "Retry-After": str(int(tok_wait) + 1),
+                    "X-RateLimit-Limit-TPM": str(self.tpm),
+                    "X-RateLimit-Remaining-TPM": str(int(self.token_bucket.tokens))
+                }
+            }
+
+        return True, {
+            "status_code": 200,
+            "remaining_rpm": int(self.request_bucket.tokens),
+            "remaining_tpm": int(self.token_bucket.tokens)
+        }
+
+
+# =====================================================================
+# Verification Flow
+# =====================================================================
+if __name__ == "__main__":
+    limiter = DualLLMRateLimiter(max_rpm=5, max_tpm=2000)
+
+    print("=========================================================")
+    print("DUAL-CONSTRAINT RATE LIMITER (RPM: 5, TPM: 2,000)")
+    print("=========================================================")
+
+    # Simulation: 7 rapid requests with 400 tokens each
+    for i in range(1, 8):
+        allowed, meta = limiter.check_and_consume(estimated_tokens=400)
+        if allowed:
+            print(f"Request #{i}: ALLOWED [200 OK] (Remaining RPM: {meta['remaining_rpm']}, TPM: {meta['remaining_tpm']})")
+        else:
+            print(f"Request #{i}: BLOCKED [429] (Reason: {meta['reason']}, Retry-After: {meta['retry_after']}s)")
+```
+
+### Execution:
+```bash
+python llm_rate_limiter.py
+```
